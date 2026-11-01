@@ -237,17 +237,61 @@ mod tests {
         assert!(file_path.exists());
         assert_eq!(fs::metadata(&file_path).unwrap().len(), 70);
 
-        // Test read_image_base64 with relative path and base_dir
-        let read_res = image_ops::read_image_base64(res.clone(), Some(base.clone()))
-            .await
-            .unwrap();
+        // Test resolve_and_read_image_base64 with relative path and base_dir
+        let read_res =
+            image_ops::resolve_and_read_image_base64(res.clone(), Some(base.clone()), vec![])
+                .await
+                .unwrap();
         assert!(read_res.starts_with("data:image/png;base64,"));
 
-        // Test read_image_base64 with absolute path
-        let abs_read = image_ops::read_image_base64(file_path.to_str().unwrap().to_string(), None)
-            .await
-            .unwrap();
+        // Test resolve_and_read_image_base64 with absolute path
+        let abs_read = image_ops::resolve_and_read_image_base64(
+            file_path.to_str().unwrap().to_string(),
+            None,
+            vec![],
+        )
+        .await
+        .unwrap();
         assert!(abs_read.starts_with("data:image/png;base64,"));
+
+        // Test subfolder asset resolution & percent-encoded Turkish characters (NFC/NFD/ASCII fallback)
+        let sub_dir = dir.path().join("assets").join("Turkce_Belge_Ornegi");
+        fs::create_dir_all(&sub_dir).unwrap();
+        let sub_img = sub_dir.join("Turkce_Belge_Ornegi-p1-1.png");
+        fs::copy(&file_path, &sub_img).unwrap();
+
+        // 1) Requesting via percent-encoded Turkish path when disk file is ASCII-sanitized
+        let encoded_tr = "assets/T%C3%BCrk%C3%A7e_Belge_%C3%96rne%C4%9Fi/T%C3%BCrk%C3%A7e_Belge_%C3%96rne%C4%9Fi-p1-1.png";
+        let tr_res = image_ops::resolve_and_read_image_base64(
+            encoded_tr.to_string(),
+            Some(base.clone()),
+            vec![],
+        )
+        .await
+        .unwrap();
+        assert!(tr_res.starts_with("data:image/png;base64,"));
+
+        // 2) Requesting flat path (assets/Turkce_Belge_Ornegi-p1-1.png) when image is inside subfolder
+        let flat_req = "assets/Turkce_Belge_Ornegi-p1-1.png";
+        let flat_res = image_ops::resolve_and_read_image_base64(
+            flat_req.to_string(),
+            None,
+            vec![dir.path().to_path_buf()],
+        )
+        .await
+        .unwrap();
+        assert!(flat_res.starts_with("data:image/png;base64,"));
+
+        // 3) Requesting path with spaces/parentheses/hyphens when disk file is sanitized
+        let punct_req = "assets/Türkçe - Belge (Örneği)/Türkçe - Belge (Örneği)-p1-1.png";
+        let punct_res = image_ops::resolve_and_read_image_base64(
+            punct_req.to_string(),
+            Some(format!("/nonexistent/dir\n{}", base)),
+            vec![],
+        )
+        .await
+        .unwrap();
+        assert!(punct_res.starts_with("data:image/png;base64,"));
     }
 
     #[test]

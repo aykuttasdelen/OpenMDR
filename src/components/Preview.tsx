@@ -144,45 +144,101 @@ function cleanCalloutChildren(children: React.ReactNode, tag: string): React.Rea
   });
 }
 
-// Resilient image renderer with Tauri asset protocol and binary base64 auto-fallback
+// In-memory cache for resolved base64 data URLs to eliminate flicker on re-renders
+const base64ImageCache = new Map<string, string>();
+const passthroughUrlTransform = (url: string) => url;
+
+function getReadImageBase64Fn(): ((filePath: string, baseDir?: string) => Promise<string>) | undefined {
+  if (typeof window !== 'undefined' && window.electronAPI?.readImageBase64) {
+    return window.electronAPI.readImageBase64;
+  }
+  return undefined;
+}
+
+// Resilient image renderer that proactively resolves local assets via Tauri IPC into base64 data URLs
 const PreviewImage: React.FC<{
   src?: string;
   alt?: string;
   effectiveBaseDir?: string;
+  searchDirs?: string;
   [key: string]: any;
-}> = ({ src = '', alt = '', effectiveBaseDir, style, ...props }) => {
-  const [currentSrc, setCurrentSrc] = useState(() => resolveRelativeImagePath(src, effectiveBaseDir));
-  const hasAttemptedFallback = useRef(false);
+}> = ({ node: _node, src = '', alt = '', effectiveBaseDir, searchDirs, style, ...props }) => {
+  const isRemoteOrData = /^(https?:\/\/|data:|blob:)/i.test(src);
+  const lookupDir = searchDirs || effectiveBaseDir;
+  const cacheKey = `${lookupDir || ''}::${src}`;
+
+  const [currentSrc, setCurrentSrc] = useState<string | null>(() => {
+    if (!src) return null;
+    if (isRemoteOrData) return src;
+    const cached = base64ImageCache.get(cacheKey);
+    if (cached) return cached;
+    if (getReadImageBase64Fn()) {
+      return null;
+    }
+    return resolveRelativeImagePath(src, effectiveBaseDir);
+  });
 
   useEffect(() => {
-    setCurrentSrc(resolveRelativeImagePath(src, effectiveBaseDir));
-    hasAttemptedFallback.current = false;
-  }, [src, effectiveBaseDir]);
-
-  const handleError = async (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
-    if (hasAttemptedFallback.current) return;
-    hasAttemptedFallback.current = true;
-
-    // If custom protocol asset:// or file:// failed, invoke native Tauri fallback to read binary directly
-    if (window.electronAPI?.readImageBase64 && src && !src.startsWith('data:') && !src.startsWith('http')) {
-      try {
-        const base64Src = await window.electronAPI.readImageBase64(src, effectiveBaseDir);
-        if (base64Src) {
-          setCurrentSrc(base64Src);
-          return;
-        }
-      } catch (err) {
-        console.warn('Native fallback failed for image:', src, err);
-      }
+    if (!src) {
+      setCurrentSrc(null);
+      return;
     }
-  };
+    if (/^(https?:\/\/|data:|blob:)/i.test(src)) {
+      setCurrentSrc(src);
+      return;
+    }
+
+    const dirArg = searchDirs || effectiveBaseDir;
+    const key = `${dirArg || ''}::${src}`;
+    const cached = base64ImageCache.get(key);
+    if (cached) {
+      setCurrentSrc(cached);
+      return;
+    }
+
+    let cancelled = false;
+    const readImageFn = getReadImageBase64Fn();
+
+    if (readImageFn) {
+      readImageFn(src, dirArg)
+        .then((base64Src) => {
+          if (!cancelled && base64Src) {
+            base64ImageCache.set(key, base64Src);
+            setCurrentSrc(base64Src);
+          }
+        })
+        .catch((err) => {
+          console.warn('Native image load failed for:', src, err);
+          if (!cancelled) {
+            if (effectiveBaseDir) {
+              setCurrentSrc(resolveRelativeImagePath(src, effectiveBaseDir));
+            } else {
+              setCurrentSrc(null);
+            }
+          }
+        });
+    } else {
+      setCurrentSrc(resolveRelativeImagePath(src, effectiveBaseDir));
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [src, effectiveBaseDir, searchDirs]);
+
+  if (!currentSrc) {
+    return null;
+  }
 
   return (
     <img
       src={currentSrc}
       alt={alt}
-      loading="lazy"
-      onError={handleError}
+      onError={() => {
+        if (!currentSrc.startsWith('data:')) {
+          setCurrentSrc(null);
+        }
+      }}
       style={{
         maxWidth: '100%',
         height: 'auto',
@@ -214,6 +270,7 @@ export const Preview: React.FC<PreviewProps> = React.memo(({
     <div className="preview-scroll-container" ref={scrollRef}>
       <div className="preview-content" style={{ fontSize: `${fontSize}px` }}>
         <ReactMarkdown
+          urlTransform={passthroughUrlTransform}
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[rehypeKatex, rehypeHighlight]}
           components={{
@@ -281,13 +338,16 @@ export const Preview: React.FC<PreviewProps> = React.memo(({
             },
 
             // Responsive image renderer with local asset resolution & auto-fallback
-            img({ src, alt, ...props }: any) {
-              const effectiveBaseDir = activeFilePath ? getDirname(activeFilePath) : (baseDir || rootPath);
+            img({ node, src, alt, ...props }: any) {
+              const activeDir = activeFilePath ? getDirname(activeFilePath) : undefined;
+              const effectiveBaseDir = activeDir || baseDir || rootPath;
+              const searchDirs = [activeDir, baseDir, rootPath].filter(Boolean).join('\n') || undefined;
               return (
                 <PreviewImage
                   src={src}
                   alt={alt}
                   effectiveBaseDir={effectiveBaseDir}
+                  searchDirs={searchDirs}
                   {...props}
                 />
               );

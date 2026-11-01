@@ -480,6 +480,10 @@ export const App: React.FC = () => {
     destinationDir?: string
   ) => {
     if (destination === 'append' && activeTab) {
+      if (destinationDir && !defaultSavePath) {
+        setDefaultSavePath(destinationDir);
+        localStorage.setItem(STORAGE_KEYS.DEFAULT_SAVE_PATH, destinationDir);
+      }
       const updated = activeTab.content ? `${activeTab.content}\n\n---\n\n${markdown}` : markdown;
       handleContentChange(updated, activeTab.id);
     } else {

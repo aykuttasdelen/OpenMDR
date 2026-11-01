@@ -161,12 +161,11 @@ export function resolveRelativeImagePath(src: string, baseDir?: string): string 
   if (/^(https?:\/\/|data:|blob:|asset:\/\/)/i.test(src)) {
     return src;
   }
-  let targetPath = src;
   if (/^file:\/\//i.test(src)) {
     // If running in Tauri webview, convert file:// to asset://
     if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.convertFileSrc) {
       try {
-        const rawPath = decodeURI(src.replace(/^file:\/\//i, ''));
+        const rawPath = decodeURIComponent(src.replace(/^file:\/\//i, ''));
         return (window as any).__TAURI_INTERNALS__.convertFileSrc(rawPath, 'asset');
       } catch {
         return src;
@@ -177,8 +176,14 @@ export function resolveRelativeImagePath(src: string, baseDir?: string): string 
   if (!baseDir) {
     return src;
   }
+  let decodedSrc = src;
+  try {
+    decodedSrc = decodeURIComponent(src);
+  } catch {
+    decodedSrc = src;
+  }
   const cleanBase = baseDir.replace(/\\/g, '/').replace(/\/+$/, '');
-  const cleanSrc = src.replace(/\\/g, '/').replace(/^(\.\/)+/, '').replace(/^\//, '');
+  const cleanSrc = decodedSrc.replace(/\\/g, '/').replace(/^(\.\/)+/, '').replace(/^\//, '');
   const combined = `${cleanBase}/${cleanSrc}`;
   const cleanPath = combined.startsWith('/') ? combined : `/${combined}`;
 

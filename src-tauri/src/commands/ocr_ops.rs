@@ -45,54 +45,21 @@ enum OCRExecutionTarget {
     SwiftScript(PathBuf),
 }
 
+fn is_newer(a: &Path, b: &Path) -> bool {
+    match (
+        std::fs::metadata(a).and_then(|m| m.modified()),
+        std::fs::metadata(b).and_then(|m| m.modified()),
+    ) {
+        (Ok(ta), Ok(tb)) => ta > tb,
+        _ => false,
+    }
+}
+
 fn resolve_ocr_target(app: &AppHandle) -> Result<OCRExecutionTarget, String> {
-    // 1. Check bundle resources directory
-    if let Ok(res_dir) = app.path().resource_dir() {
-        let bin = res_dir.join("native/ocr_engine");
-        if bin.exists() {
-            return Ok(OCRExecutionTarget::CompiledBinary(bin));
-        }
-        let direct_bin = res_dir.join("ocr_engine");
-        if direct_bin.exists() {
-            return Ok(OCRExecutionTarget::CompiledBinary(direct_bin));
-        }
-        let script = res_dir.join("native/ocr_engine.swift");
-        if script.exists() {
-            return Ok(OCRExecutionTarget::SwiftScript(script));
-        }
-        let direct_script = res_dir.join("ocr_engine.swift");
-        if direct_script.exists() {
-            return Ok(OCRExecutionTarget::SwiftScript(direct_script));
-        }
-    }
+    let mut found_bin: Option<PathBuf> = None;
+    let mut found_script: Option<PathBuf> = None;
 
-    // 2. Check next to current executable
-    if let Ok(curr_exe) = std::env::current_exe() {
-        if let Some(parent) = curr_exe.parent() {
-            let candidate1 = parent.join("ocr_engine");
-            if candidate1.exists() {
-                return Ok(OCRExecutionTarget::CompiledBinary(candidate1));
-            }
-            let candidate2 = parent.join("native/ocr_engine");
-            if candidate2.exists() {
-                return Ok(OCRExecutionTarget::CompiledBinary(candidate2));
-            }
-        }
-    }
-
-    // 3. Check workspace / relative directories
-    let candidates = [
-        "native/ocr_engine",
-        "src-tauri/native/ocr_engine",
-        "../src-tauri/native/ocr_engine",
-    ];
-    for c in &candidates {
-        let path = Path::new(c);
-        if path.exists() {
-            return Ok(OCRExecutionTarget::CompiledBinary(path.to_path_buf()));
-        }
-    }
-
+    // Prefer workspace script in development if present
     let script_candidates = [
         "native/ocr_engine.swift",
         "src-tauri/native/ocr_engine.swift",
@@ -101,8 +68,87 @@ fn resolve_ocr_target(app: &AppHandle) -> Result<OCRExecutionTarget, String> {
     for c in &script_candidates {
         let path = Path::new(c);
         if path.exists() {
-            return Ok(OCRExecutionTarget::SwiftScript(path.to_path_buf()));
+            found_script = Some(path.to_path_buf());
+            break;
         }
+    }
+
+    // 1. Check bundle resources directory
+    if let Ok(res_dir) = app.path().resource_dir() {
+        for rel in ["native/ocr_engine", "ocr_engine"] {
+            let bin = res_dir.join(rel);
+            if bin.exists() && found_bin.is_none() {
+                found_bin = Some(bin);
+            }
+        }
+        if found_script.is_none() {
+            for rel in ["native/ocr_engine.swift", "ocr_engine.swift"] {
+                let script = res_dir.join(rel);
+                if script.exists() {
+                    found_script = Some(script);
+                    break;
+                }
+            }
+        }
+    }
+
+    // 2. Check next to current executable
+    if found_bin.is_none() {
+        if let Ok(curr_exe) = std::env::current_exe() {
+            if let Some(parent) = curr_exe.parent() {
+                for rel in ["ocr_engine", "native/ocr_engine"] {
+                    let candidate = parent.join(rel);
+                    if candidate.exists() {
+                        found_bin = Some(candidate);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Check workspace / relative directories for binary
+    if found_bin.is_none() {
+        let bin_candidates = [
+            "native/ocr_engine",
+            "src-tauri/native/ocr_engine",
+            "../src-tauri/native/ocr_engine",
+        ];
+        for c in &bin_candidates {
+            let path = Path::new(c);
+            if path.exists() {
+                found_bin = Some(path.to_path_buf());
+                break;
+            }
+        }
+    }
+
+    // If script is available, compile/cache to temp_dir outside src-tauri watcher whenever script is newer than cached_bin
+    if let Some(ref script) = found_script {
+        let cached_bin = std::env::temp_dir().join("openmd_ocr_engine");
+        if !cached_bin.exists() || is_newer(script, &cached_bin) {
+            let status = std::process::Command::new("swiftc")
+                .arg("-O")
+                .arg(script)
+                .arg("-o")
+                .arg(&cached_bin)
+                .status();
+            if let Ok(s) = status
+                && s.success()
+                && cached_bin.exists()
+            {
+                return Ok(OCRExecutionTarget::CompiledBinary(cached_bin));
+            }
+        } else {
+            return Ok(OCRExecutionTarget::CompiledBinary(cached_bin));
+        }
+    }
+
+    if let Some(bin) = found_bin {
+        return Ok(OCRExecutionTarget::CompiledBinary(bin));
+    }
+    if let Some(script) = found_script {
+        return Ok(OCRExecutionTarget::SwiftScript(script));
     }
 
     Err("OCR motoru (ocr_engine veya ocr_engine.swift) bulunamadı.".to_string())
@@ -124,6 +170,8 @@ pub async fn process_pdf_ocr(
         return Err(format!("Belirtilen PDF dosyası bulunamadı: {}", pdf_path));
     }
 
+    crate::commands::image_ops::register_asset_search_dir(path);
+
     let target = resolve_ocr_target(&app)?;
 
     let page_arg = pages.unwrap_or_else(|| "all".to_string());
@@ -140,6 +188,10 @@ pub async fn process_pdf_ocr(
             .unwrap_or("")
             .to_string()
     });
+
+    if !output_dir_arg.is_empty() {
+        crate::commands::image_ops::register_asset_search_dir(Path::new(&output_dir_arg));
+    }
 
     let mut common_args = vec![
         "--input".to_string(),

@@ -217,6 +217,11 @@ assert.strictEqual(
   resolveRelativeImagePath('assets/paste-no-base.png', undefined),
   'assets/paste-no-base.png'
 );
+assert.strictEqual(
+  resolveRelativeImagePath('assets/T%C3%BCrk%C3%A7e_Belge/img.png', '/Users/test/workspace'),
+  'file:///Users/test/workspace/assets/T%C3%BCrk%C3%A7e_Belge/img.png',
+  'Already percent-encoded src must not be double-encoded to %25'
+);
 assert.strictEqual(resolveRelativeImagePath(''), '');
 console.log('✓ resolveRelativeImagePath test passed');
 
@@ -532,16 +537,22 @@ await testOCRImageExtractionWorkflow();
 // Test 18: Native OCR Engine End-to-End Image Extraction Test (macOS)
 async function testNativeOCREngineE2E() {
   if (process.platform !== 'darwin') return;
-  const ocrBin = path.resolve('src-tauri/native/ocr_engine');
+  const ocrSwift = path.resolve('src-tauri/native/ocr_engine.swift');
+  const cachedOcrBin = path.join(os.tmpdir(), 'openmd_ocr_engine');
   try {
-    await fs.access(ocrBin);
-  } catch {
-    console.log('ℹ ocr_engine binary not present; skipping native E2E test');
+    await fs.access(ocrSwift);
+    const swiftStat = await fs.stat(ocrSwift);
+    const binStat = await fs.stat(cachedOcrBin).catch(() => null);
+    if (!binStat || swiftStat.mtimeMs > binStat.mtimeMs) {
+      execFileSync('swiftc', ['-O', ocrSwift, '-o', cachedOcrBin], { encoding: 'utf8' });
+    }
+  } catch (err) {
+    console.log('ℹ swiftc or ocr_engine.swift not available; skipping native E2E test:', err.message);
     return;
   }
 
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openmd-native-ocr-'));
-  const pdfPath = path.join(tmpDir, 'sample_doc.pdf');
+  const pdfPath = path.join(tmpDir, 'Türkçe Belge (Örnek).pdf');
   const outDir = path.join(tmpDir, 'output');
 
   try {
@@ -564,8 +575,8 @@ ctx.closePDF()
 `;
     execFileSync('swift', ['-e', genScript], { encoding: 'utf8' });
 
-    // 1. Run with extractImages: true
-    const stdout = execFileSync(ocrBin, [
+    // 1. Run with extractImages: true on Turkish filename with spaces & parentheses
+    const stdout = execFileSync(cachedOcrBin, [
       '--input', pdfPath,
       '--output-dir', outDir,
       '--extract-images', 'true'
@@ -577,14 +588,22 @@ ctx.closePDF()
     const parsed = JSON.parse(resultLine);
     assert.strictEqual(parsed.success, true);
     assert(parsed.extractedImages && parsed.extractedImages.length > 0, 'Extracted images must not be empty');
-    assert(parsed.markdown.includes('![Görsel](assets/'), 'Markdown must link extracted assets');
+    assert.strictEqual(
+      parsed.extractedImages[0],
+      'assets/Turkce_Belge_Ornek/Turkce_Belge_Ornek-p1-1.png',
+      'Extracted image path must be sanitized to clean ASCII subfolder and filename'
+    );
+    assert(
+      parsed.markdown.includes('![Görsel](assets/Turkce_Belge_Ornek/Turkce_Belge_Ornek-p1-1.png)'),
+      'Markdown must link sanitized extracted asset'
+    );
 
     const assetOnDisk = path.join(outDir, parsed.extractedImages[0]);
     const stat = await fs.stat(assetOnDisk);
     assert(stat.size > 0, 'Extracted asset file must exist and be non-empty');
 
     // 2. Run with extractImages: false
-    const stdoutNoImg = execFileSync(ocrBin, [
+    const stdoutNoImg = execFileSync(cachedOcrBin, [
       '--input', pdfPath,
       '--output-dir', path.join(tmpDir, 'no_img_out'),
       '--extract-images', 'false'

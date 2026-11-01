@@ -132,14 +132,14 @@ func renderPageToCGImage(page: PDFPage, dpi: CGFloat = 300.0) -> CGImage? {
     return context.makeImage()
 }
 
-// Render a specific sub-rect of a PDFPage to CGImage
+// Render a specific sub-rect of a PDFPage to CGImage in raw PDF user space
 func renderRectFromPage(page: PDFPage, rect: CGRect, dpi: CGFloat = 200.0) -> CGImage? {
     guard rect.width > 0 && rect.height > 0 else { return nil }
     let scale = dpi / 72.0
     let width = max(1, Int(ceil(rect.width * scale)))
     let height = max(1, Int(ceil(rect.height * scale)))
     
-    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
     guard let context = CGContext(
         data: nil,
         width: width,
@@ -158,30 +158,89 @@ func renderRectFromPage(page: PDFPage, rect: CGRect, dpi: CGFloat = 200.0) -> CG
     context.saveGState()
     context.scaleBy(x: scale, y: scale)
     context.translateBy(x: -rect.origin.x, y: -rect.origin.y)
-    page.draw(with: .mediaBox, to: context)
+    if let cgPage = page.pageRef {
+        context.drawPDFPage(cgPage)
+    } else {
+        page.draw(with: .mediaBox, to: context)
+    }
     context.restoreGState()
     
     return context.makeImage()
 }
 
-// Save CGImage as PNG
+// Save CGImage as normalized 8-bit sRGB PNG atomically
 func saveCGImageAsPNG(_ image: CGImage, to fileUrl: URL) -> Bool {
-    guard let destination = CGImageDestinationCreateWithURL(
-        fileUrl as CFURL,
+    let width = image.width
+    let height = image.height
+    guard width > 0 && height > 0 else { return false }
+
+    let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+    var targetImage = image
+
+    if let ctx = CGContext(
+        data: nil,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: 0,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) {
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        if let normalized = ctx.makeImage() {
+            targetImage = normalized
+        }
+    }
+
+    let outData = NSMutableData()
+    guard let destination = CGImageDestinationCreateWithData(
+        outData as CFMutableData,
         UTType.png.identifier as CFString,
         1,
         nil
     ) else {
         return false
     }
-    CGImageDestinationAddImage(destination, image, nil)
-    return CGImageDestinationFinalize(destination)
+    CGImageDestinationAddImage(destination, targetImage, nil)
+    guard CGImageDestinationFinalize(destination), outData.length > 0 else {
+        return false
+    }
+    return (try? (outData as Data).write(to: fileUrl, options: .atomic)) != nil
+}
+
+// Sanitize document/subfolder names to ASCII-safe identifiers (handling Turkish NFD/NFC characters)
+func sanitizeDocName(_ raw: String) -> String {
+    let turkishMap: [Character: String] = [
+        "ç": "c", "Ç": "C",
+        "ğ": "g", "Ğ": "G",
+        "ı": "i", "I": "I",
+        "İ": "I", "i": "i",
+        "ö": "o", "Ö": "O",
+        "ş": "s", "Ş": "S",
+        "ü": "u", "Ü": "U"
+    ]
+    let precomposed = raw.precomposedStringWithCanonicalMapping
+    var mapped = ""
+    for ch in precomposed {
+        if let replacement = turkishMap[ch] {
+            mapped.append(replacement)
+        } else {
+            mapped.append(ch)
+        }
+    }
+    let folded = mapped.folding(options: [.diacriticInsensitive, .widthInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+    let asciiAllowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+    let cleaned = folded
+        .components(separatedBy: asciiAllowed.inverted)
+        .filter { !$0.isEmpty }
+        .joined(separator: "_")
+    return cleaned.isEmpty ? "asset" : cleaned
 }
 
 // MARK: - PDF Content & Image Extraction
 
 // Inspect stream dictionary to extract original JPEG data or decode CGImage
-func extractImageFromStream(_ stream: CGPDFStreamRef) -> (cgImage: CGImage?, jpegData: Data?, ext: String)? {
+func extractImageFromStream(_ stream: CGPDFStreamRef, allowRawFallback: Bool = true) -> (cgImage: CGImage?, jpegData: Data?, ext: String)? {
     guard let streamDict = CGPDFStreamGetDictionary(stream) else { return nil }
     
     var width: CGPDFInteger = 0
@@ -189,6 +248,16 @@ func extractImageFromStream(_ stream: CGPDFStreamRef) -> (cgImage: CGImage?, jpe
     guard CGPDFDictionaryGetInteger(streamDict, "Width", &width),
           CGPDFDictionaryGetInteger(streamDict, "Height", &height),
           width > 0 && height > 0 else {
+        return nil
+    }
+    
+    // Check if the image stream carries an external alpha mask or custom Decode array;
+    // when positioned on a page (allowRawFallback == false), prefer page rendering so mask & decode are composited.
+    var maskObj: CGPDFObjectRef?
+    let hasMask = CGPDFDictionaryGetObject(streamDict, "SMask", &maskObj) || CGPDFDictionaryGetObject(streamDict, "Mask", &maskObj)
+    var decodeArr: CGPDFArrayRef?
+    let hasDecode = CGPDFDictionaryGetArray(streamDict, "Decode", &decodeArr)
+    if !allowRawFallback && (hasMask || hasDecode) {
         return nil
     }
     
@@ -200,11 +269,16 @@ func extractImageFromStream(_ stream: CGPDFStreamRef) -> (cgImage: CGImage?, jpe
     let data = cfData as Data
     guard !data.isEmpty else { return nil }
     
-    // Check if JPEG encoded
+    // Check if JPEG encoded and verify it can be decoded into a valid CGImage
     if format.rawValue == 1 || (data.count > 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF) {
         if let source = CGImageSourceCreateWithData(data as CFData, nil),
-           CGImageSourceGetCount(source) > 0 {
-            return (nil, data, "jpg")
+           let img = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+            if (img.colorSpace?.model == .rgb || img.colorSpace?.model == .monochrome) && !hasMask && !hasDecode {
+                return (nil, data, "jpg")
+            } else {
+                // Convert CMYK or non-standard color space JPEGs to normalized sRGB PNG
+                return (img, nil, "png")
+            }
         }
     }
     
@@ -217,6 +291,7 @@ func extractImageFromStream(_ stream: CGPDFStreamRef) -> (cgImage: CGImage?, jpe
     // Raw bitmap data reconstruction
     var components = 3
     var colorSpace: CGColorSpace = CGColorSpaceCreateDeviceRGB()
+    var isUnsupportedRawColorSpace = false
     
     var csObj: CGPDFObjectRef?
     if CGPDFDictionaryGetObject(streamDict, "ColorSpace", &csObj), let obj = csObj {
@@ -232,6 +307,8 @@ func extractImageFromStream(_ stream: CGPDFStreamRef) -> (cgImage: CGImage?, jpe
             } else if name == "DeviceRGB" {
                 colorSpace = CGColorSpaceCreateDeviceRGB()
                 components = 3
+            } else {
+                isUnsupportedRawColorSpace = true
             }
         } else {
             var arr: CGPDFArrayRef?
@@ -245,7 +322,7 @@ func extractImageFromStream(_ stream: CGPDFStreamRef) -> (cgImage: CGImage?, jpe
                     } else if csFamily == "DeviceCMYK" {
                         colorSpace = CGColorSpaceCreateDeviceCMYK()
                         components = 4
-                    } else if csFamily == "DeviceRGB" || csFamily == "CalRGB" || csFamily == "Lab" {
+                    } else if csFamily == "DeviceRGB" || csFamily == "CalRGB" {
                         colorSpace = CGColorSpaceCreateDeviceRGB()
                         components = 3
                     } else if csFamily == "ICCBased" {
@@ -266,15 +343,22 @@ func extractImageFromStream(_ stream: CGPDFStreamRef) -> (cgImage: CGImage?, jpe
                                 }
                             }
                         }
+                    } else {
+                        // Indexed, Separation, DeviceN, Lab, Pattern require PDFKit rendering
+                        isUnsupportedRawColorSpace = true
                     }
                 }
             }
         }
     }
     
+    if isUnsupportedRawColorSpace && !allowRawFallback {
+        return nil
+    }
+    
     // Infer components from data size if not explicitly gray or cmyk
     let pixelCount = Int(width) * Int(height)
-    if pixelCount > 0 {
+    if pixelCount > 0 && !isUnsupportedRawColorSpace {
         if data.count >= pixelCount * 4 && components != 1 {
             components = 4
             if colorSpace.numberOfComponents != 4 {
@@ -293,7 +377,9 @@ func extractImageFromStream(_ stream: CGPDFStreamRef) -> (cgImage: CGImage?, jpe
     
     let bytesPerRow: Int
     if bpc == 1 {
-        bytesPerRow = (Int(width) + 7) / 8
+        bytesPerRow = (Int(width) * components + 7) / 8
+    } else if bpc < 8 {
+        bytesPerRow = (Int(width) * components * Int(bpc) + 7) / 8
     } else {
         bytesPerRow = Int(width) * components * max(1, Int(bpc) / 8)
     }
@@ -325,7 +411,7 @@ func extractImageFromStream(_ stream: CGPDFStreamRef) -> (cgImage: CGImage?, jpe
 class PageScannerState {
     var ctmStack: [CGAffineTransform] = [.identity]
     var currentCTM: CGAffineTransform = .identity
-    var invocations: [(name: String, rect: CGRect)] = []
+    var invocations: [(name: String, rect: CGRect, ctm: CGAffineTransform)] = []
 }
 
 func getInheritedResources(from dict: CGPDFDictionaryRef) -> CGPDFDictionaryRef? {
@@ -372,7 +458,7 @@ func scanContentStream(contentStream: CGPDFContentStreamRef, state: PageScannerS
             let name = String(cString: np)
             let unitRect = CGRect(x: 0, y: 0, width: 1, height: 1)
             let rect = unitRect.applying(s.currentCTM).standardized
-            s.invocations.append((name: name, rect: rect))
+            s.invocations.append((name: name, rect: rect, ctm: s.currentCTM))
         }
     }
     
@@ -428,17 +514,17 @@ func scanPageRecursively(cgPage: CGPDFPage) -> [DiscoveredImage] {
         return (s, subtype, fRes, matrix)
     }
     
-    func processInvocations(_ invs: [(name: String, rect: CGRect)], parentStream: CGPDFContentStreamRef, currentRes: CGPDFDictionaryRef?, depth: Int) {
+    func processInvocations(_ invs: [(name: String, rect: CGRect, ctm: CGAffineTransform)], parentStream: CGPDFContentStreamRef, currentRes: CGPDFDictionaryRef?, depth: Int) {
         if depth > 5 { return }
         for inv in invs {
             if let resolved = resolveXObject(name: inv.name, inRes: currentRes) {
                 if resolved.subtype == "Image" {
                     results.append(DiscoveredImage(name: inv.name, rect: inv.rect, stream: resolved.stream))
                 } else if resolved.subtype == "Form", let formStreamRef = resolved.stream {
-                    let formRes = resolved.formResources ?? currentRes ?? initialResources
-                    let formContentStream = CGPDFContentStreamCreateWithStream(formStreamRef, formRes!, parentStream)
+                    guard let formRes = resolved.formResources ?? currentRes ?? initialResources else { continue }
+                    let formContentStream = CGPDFContentStreamCreateWithStream(formStreamRef, formRes, parentStream)
                     let nestedState = PageScannerState()
-                    let formCTM = resolved.matrix.concatenating(CGAffineTransform(translationX: inv.rect.origin.x, y: inv.rect.origin.y))
+                    let formCTM = resolved.matrix.concatenating(inv.ctm)
                     nestedState.currentCTM = formCTM
                     scanContentStream(contentStream: formContentStream, state: nestedState)
                     processInvocations(nestedState.invocations, parentStream: formContentStream, currentRes: formRes, depth: depth + 1)
@@ -460,7 +546,7 @@ func extractImagesFromPage(
     savedPaths: inout Set<String>
 ) -> [ExtractedAsset] {
     guard let cgPage = page.pageRef,
-          let pageDict = cgPage.dictionary else {
+           let pageDict = cgPage.dictionary else {
         return []
     }
     
@@ -470,7 +556,7 @@ func extractImagesFromPage(
     var assets: [ExtractedAsset] = []
     var imageIndex = 1
     
-    func generateUniqueAssetUrl(ext: String) -> (url: URL, relativePath: String) {
+    func nextUniqueAssetUrl(ext: String) -> (url: URL, relativePath: String) {
         var candidateName = "\(baseName)-p\(pageNumber)-\(imageIndex).\(ext)"
         var counter = 1
         var candidateUrl = assetsDir.appendingPathComponent(candidateName)
@@ -479,29 +565,44 @@ func extractImagesFromPage(
             candidateUrl = assetsDir.appendingPathComponent(candidateName)
             counter += 1
         }
-        imageIndex += 1
-        savedPaths.insert(candidateUrl.path)
         let rel = subfolderName.isEmpty ? "assets/\(candidateName)" : "assets/\(subfolderName)/\(candidateName)"
         return (candidateUrl, rel)
+    }
+
+    func commitSavedAsset(url: URL) {
+        imageIndex += 1
+        savedPaths.insert(url.path)
     }
     
     let discovered = scanPageRecursively(cgPage: cgPage)
     var processedStreams = Set<UInt>()
     var processedNames = Set<String>()
     
+    func markMaskStreams(of stream: CGPDFStreamRef?) {
+        guard let s = stream, let sDict = CGPDFStreamGetDictionary(s) else { return }
+        for key in ["SMask", "Mask"] {
+            var maskStream: CGPDFStreamRef?
+            if CGPDFDictionaryGetStream(sDict, key, &maskStream), let ms = maskStream {
+                processedStreams.insert(unsafeBitCast(ms, to: UInt.self))
+            }
+        }
+    }
+    
     // 1. Process images discovered via content stream (with rects)
     for item in discovered {
         guard item.rect.width >= 4 && item.rect.height >= 4 else { continue }
+        markMaskStreams(of: item.stream)
         
         let normTop = max(0.0, min(1.0, 1.0 - (item.rect.origin.y + item.rect.size.height) / pageBounds.height))
         let normBottom = max(0.0, min(1.0, 1.0 - item.rect.origin.y / pageBounds.height))
         
         var savedSuccessfully = false
         
-        if let s = item.stream, let extracted = extractImageFromStream(s) {
-            let (targetUrl, relPath) = generateUniqueAssetUrl(ext: extracted.ext)
+        if let s = item.stream, let extracted = extractImageFromStream(s, allowRawFallback: false) {
+            let (targetUrl, relPath) = nextUniqueAssetUrl(ext: extracted.ext)
             if let data = extracted.jpegData {
-                if (try? data.write(to: targetUrl)) != nil {
+                if (try? data.write(to: targetUrl, options: .atomic)) != nil {
+                    commitSavedAsset(url: targetUrl)
                     assets.append(ExtractedAsset(
                         relativePath: relPath,
                         fullPath: targetUrl.path,
@@ -513,6 +614,7 @@ func extractImagesFromPage(
                 }
             } else if let img = extracted.cgImage {
                 if saveCGImageAsPNG(img, to: targetUrl) {
+                    commitSavedAsset(url: targetUrl)
                     assets.append(ExtractedAsset(
                         relativePath: relPath,
                         fullPath: targetUrl.path,
@@ -525,11 +627,12 @@ func extractImagesFromPage(
             }
         }
         
-        // Fallback: render rect directly from page
+        // Fallback: render rect directly from page (handles Indexed, SMask, Decode, Lab, Separation)
         if !savedSuccessfully {
             if let rendered = renderRectFromPage(page: page, rect: item.rect) {
-                let (targetUrl, relPath) = generateUniqueAssetUrl(ext: "png")
+                let (targetUrl, relPath) = nextUniqueAssetUrl(ext: "png")
                 if saveCGImageAsPNG(rendered, to: targetUrl) {
+                    commitSavedAsset(url: targetUrl)
                     assets.append(ExtractedAsset(
                         relativePath: relPath,
                         fullPath: targetUrl.path,
@@ -567,6 +670,7 @@ func extractImagesFromPage(
                     if CGPDFDictionaryGetName(sDict, "Subtype", &subtypePtr), let st = subtypePtr {
                         let subtype = String(cString: st)
                         if subtype == "Image" {
+                            markMaskStreams(of: s)
                             list.append((name: name, stream: s))
                         } else if subtype == "Form" {
                             var fRes: CGPDFDictionaryRef?
@@ -592,15 +696,16 @@ func extractImagesFromPage(
             continue
         }
         
-        if let extracted = extractImageFromStream(resImg.stream) {
-            let (targetUrl, relPath) = generateUniqueAssetUrl(ext: extracted.ext)
+        if let extracted = extractImageFromStream(resImg.stream, allowRawFallback: true) {
+            let (targetUrl, relPath) = nextUniqueAssetUrl(ext: extracted.ext)
             var didSave = false
             if let data = extracted.jpegData {
-                didSave = (try? data.write(to: targetUrl)) != nil
+                didSave = (try? data.write(to: targetUrl, options: .atomic)) != nil
             } else if let img = extracted.cgImage {
                 didSave = saveCGImageAsPNG(img, to: targetUrl)
             }
             if didSave {
+                commitSavedAsset(url: targetUrl)
                 assets.append(ExtractedAsset(
                     relativePath: relPath,
                     fullPath: targetUrl.path,
@@ -944,13 +1049,9 @@ func main() {
     let assetsDirUrl = destinationDirUrl.appendingPathComponent("assets")
     
     let rawBaseName = fileUrl.deletingPathExtension().lastPathComponent
-    let cleanedBaseName = rawBaseName
-        .components(separatedBy: CharacterSet.alphanumerics.inverted)
-        .filter { !$0.isEmpty }
-        .joined(separator: "_")
-    let baseDocName = cleanedBaseName.isEmpty ? "asset" : cleanedBaseName
+    let baseDocName = sanitizeDocName(rawBaseName)
     
-    let subfolderName = customSubfolder ?? baseDocName
+    let subfolderName = customSubfolder.map { sanitizeDocName($0) } ?? baseDocName
     let docAssetsDirUrl = subfolderName.isEmpty ? assetsDirUrl : assetsDirUrl.appendingPathComponent(subfolderName)
     
     if extractImages {

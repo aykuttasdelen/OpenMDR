@@ -13,6 +13,7 @@ pub async fn open_file_dialog() -> Result<Option<OpenFileResult>, String> {
     match handle {
         Some(file) => {
             let path = file.path().to_path_buf();
+            crate::commands::image_ops::register_asset_search_dir(&path);
             let content = tokio::fs::read_to_string(&path)
                 .await
                 .map_err(|e| format!("Dosya okunamadı: {}", e))?;
@@ -40,7 +41,10 @@ pub async fn open_pdf_dialog() -> Result<Option<String>, String> {
 
     let handle = dialog.pick_file().await;
     match handle {
-        Some(file) => Ok(Some(file.path().to_string_lossy().to_string())),
+        Some(file) => {
+            crate::commands::image_ops::register_asset_search_dir(file.path());
+            Ok(Some(file.path().to_string_lossy().to_string()))
+        }
         None => Ok(None),
     }
 }
@@ -67,6 +71,7 @@ pub async fn save_file_dialog(
     match handle {
         Some(file) => {
             let path = file.path().to_path_buf();
+            crate::commands::image_ops::register_asset_search_dir(&path);
             if let Some(ref text) = content {
                 tokio::fs::write(&path, text)
                     .await
@@ -88,6 +93,7 @@ pub async fn open_directory_dialog(
     match handle {
         Some(folder) => {
             let dir_path = folder.path().to_path_buf();
+            crate::commands::image_ops::register_asset_search_dir(&dir_path);
             let path_clone = dir_path.clone();
             let md_only = markdown_only.unwrap_or(true);
 

@@ -105,6 +105,7 @@ pub fn scan_dir_recursive(
 
 #[tauri::command]
 pub async fn read_file(file_path: String) -> Result<String, String> {
+    crate::commands::image_ops::register_asset_search_dir(Path::new(&file_path));
     tokio::fs::read_to_string(&file_path)
         .await
         .map_err(|e| format!("Dosya okunamadı: {}", e))
@@ -112,6 +113,7 @@ pub async fn read_file(file_path: String) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn write_file(file_path: String, content: String) -> Result<bool, String> {
+    crate::commands::image_ops::register_asset_search_dir(Path::new(&file_path));
     if let Some(parent) = Path::new(&file_path).parent()
         && !parent.exists()
     {
@@ -132,6 +134,7 @@ pub async fn scan_directory(
     markdown_only: Option<bool>,
 ) -> Result<Vec<FileItem>, String> {
     let path = PathBuf::from(dir_path);
+    crate::commands::image_ops::register_asset_search_dir(&path);
     let md_only = markdown_only.unwrap_or(true);
     let items = tokio::task::spawn_blocking(move || {
         scan_dir_recursive(&path, 0, 4, md_only)
