@@ -126,11 +126,13 @@ export const tauriAPI = {
 
   saveHTMLFile: async (
     htmlContent: string,
-    defaultName?: string
-  ): Promise<boolean> => {
-    return invoke<boolean>('save_html', {
+    defaultName?: string,
+    defaultDir?: string | null
+  ): Promise<string | null> => {
+    return invoke<string | null>('save_html', {
       htmlContent,
       defaultName: defaultName || null,
+      defaultDir: defaultDir || null,
     });
   },
 

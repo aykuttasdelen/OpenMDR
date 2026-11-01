@@ -1498,6 +1498,7 @@ export const App: React.FC = () => {
         onClose={() => setExportModalOpen(false)}
         documentTitle={activeTab?.title || 'Document'}
         markdownContent={activeTab ? activeTab.content : ''}
+        defaultDir={activeTab?.filePath ? getDirname(activeTab.filePath) : defaultSavePath}
       />
 
       {/* Settings Modal (Task 4) */}

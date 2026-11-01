@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, FileCode, Printer, Check, Copy } from 'lucide-react';
+import { X, FileCode, Printer, Check, Copy, FolderOpen } from 'lucide-react';
 import { generateStandaloneHTML } from '../utils/markdownUtils';
 import { useTranslation } from '../i18n/LanguageContext';
 
@@ -8,18 +8,21 @@ interface ExportModalProps {
   onClose: () => void;
   documentTitle: string;
   markdownContent: string;
+  defaultDir?: string | null;
 }
 
 export const ExportModal: React.FC<ExportModalProps> = ({
   isOpen,
   onClose,
   documentTitle,
-  markdownContent
+  markdownContent,
+  defaultDir
 }) => {
   const { t } = useTranslation();
   const [copiedHTML, setCopiedHTML] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [lastSavedPath, setLastSavedPath] = useState<string | null>(null);
   const [copiedMD, setCopiedMD] = useState(false);
 
   if (!isOpen) return null;
@@ -33,8 +36,14 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
       if (window.electronAPI) {
         const defaultName = `${documentTitle.replace(/\.md$/, '')}.html`;
-        await window.electronAPI.saveHTMLFile(fullHTML, defaultName);
-        setMessage(t('export.htmlSuccess'));
+        const savedPath = await window.electronAPI.saveHTMLFile(fullHTML, defaultName, defaultDir);
+        if (savedPath) {
+          setLastSavedPath(savedPath);
+          setMessage(t('export.htmlSuccess', { path: savedPath }));
+        } else {
+          setLastSavedPath(null);
+          setMessage(t('export.htmlCanceled'));
+        }
       } else {
         const blob = new Blob([fullHTML], { type: 'text/html;charset=utf-8' });
         const url = URL.createObjectURL(blob);
@@ -62,7 +71,8 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       if (window.electronAPI) {
         const defaultName = `${documentTitle.replace(/\.md$/, '')}.pdf`;
         await window.electronAPI.exportPDF(fullHTML, defaultName);
-        setMessage(t('export.pdfSuccess'));
+        setLastSavedPath(null);
+        setMessage(t('export.pdfPrompt'));
       } else {
         window.print();
       }
@@ -116,14 +126,27 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
           {message && (
             <div style={{
-              background: message.startsWith('Hata') ? 'var(--danger-subtle)' : 'var(--accent-subtle)',
-              border: `1px solid ${message.startsWith('Hata') ? 'var(--danger-color)' : 'var(--accent-primary)'}`,
+              background: message.startsWith('Hata') || message.includes('error') ? 'var(--danger-subtle)' : 'var(--accent-subtle)',
+              border: `1px solid ${message.startsWith('Hata') || message.includes('error') ? 'var(--danger-color)' : 'var(--accent-primary)'}`,
               borderRadius: 'var(--radius-sm)',
-              padding: '8px 12px',
+              padding: '10px 14px',
               fontSize: 13,
-              color: message.startsWith('Hata') ? 'var(--danger-color)' : 'var(--accent-primary)'
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
+              color: message.startsWith('Hata') || message.includes('error') ? 'var(--danger-color)' : 'var(--accent-primary)'
             }}>
-              {message}
+              <div>{message}</div>
+              {lastSavedPath && (
+                <button
+                  className="btn-secondary"
+                  onClick={() => window.electronAPI?.showInFolder?.(lastSavedPath)}
+                  style={{ alignSelf: 'flex-start', fontSize: 12, padding: '4px 10px', display: 'flex', alignItems: 'center', gap: 6 }}
+                >
+                  <FolderOpen size={13} />
+                  <span>{t('export.showInFinder')}</span>
+                </button>
+              )}
             </div>
           )}
 

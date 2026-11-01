@@ -40,7 +40,7 @@ export interface ElectronAPI {
   showInFolder: (filePath: string) => Promise<void>;
   getAvailablePath: (dirPath: string, fileName: string) => Promise<string>;
   exportPDF: (htmlContent?: string, defaultTitle?: string) => Promise<boolean>;
-  saveHTMLFile: (htmlContent: string, defaultName?: string) => Promise<boolean>;
+  saveHTMLFile: (htmlContent: string, defaultName?: string, defaultDir?: string | null) => Promise<string | null>;
   getAppVersion: () => Promise<string>;
   getDocumentsDir?: () => Promise<string>;
   getDefaultDocumentsDir?: () => Promise<string>;
