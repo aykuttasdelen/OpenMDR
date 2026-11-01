@@ -63,32 +63,56 @@ const MermaidDiagram: React.FC<{ code: string; isDark: boolean }> = ({ code, isD
   );
 };
 
+// Helper to recursively extract plain text from React children (rehype-highlight token trees)
+function extractCodeText(children: React.ReactNode): string {
+  if (typeof children === 'string') return children;
+  if (typeof children === 'number') return String(children);
+  if (!children) return '';
+  if (Array.isArray(children)) return children.map(extractCodeText).join('');
+  if (React.isValidElement(children) && (children.props as any)?.children) {
+    return extractCodeText((children.props as any).children);
+  }
+  return '';
+}
+
 // Code block with Copy button
-const CodeBlock: React.FC<{ language?: string; value: string; isDark: boolean }> = ({ language, value, isDark }) => {
+interface CodeBlockProps {
+  language?: string;
+  className?: string;
+  rawCode: string;
+  isDark: boolean;
+  children: React.ReactNode;
+}
+
+const CodeBlock: React.FC<CodeBlockProps> = ({ language, className, rawCode, isDark, children }) => {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(value);
+    navigator.clipboard.writeText(rawCode);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
   if (language === 'mermaid') {
-    return <MermaidDiagram code={value} isDark={isDark} />;
+    return <MermaidDiagram code={rawCode} isDark={isDark} />;
   }
+
+  const codeClassName = className || (language ? `hljs language-${language}` : 'hljs');
 
   return (
     <div className="code-block-wrapper">
       <div className="code-block-header">
         <span>{language || 'text'}</span>
-        <button className="copy-code-btn" onClick={handleCopy}>
+        <button className="copy-code-btn" onClick={handleCopy} title={t('preview.copy')}>
           {copied ? <Check size={13} color="#10b981" /> : <Copy size={13} />}
           <span>{copied ? t('preview.copied') : t('preview.copy')}</span>
         </button>
       </div>
       <pre>
-        <code>{value}</code>
+        <code className={codeClassName}>
+          {children}
+        </code>
       </pre>
     </div>
   );
@@ -159,21 +183,41 @@ export const Preview: React.FC<PreviewProps> = React.memo(({
               return <input {...props} />;
             },
 
-            // Custom code block renderer
-            code({ node, inline, className, children, ...props }: any) {
-              const match = /language-(\w+)/.exec(className || '');
-              const codeText = String(children).replace(/\n$/, '');
+            // Custom code block renderer (wrapped inside pre)
+            pre({ children }: any) {
+              const codeEl = React.isValidElement(children) ? (children as React.ReactElement<any>) : null;
+              if (codeEl) {
+                const className = codeEl.props?.className || '';
+                const match = /language-(\w+)/.exec(className);
+                const lang = match ? match[1] : undefined;
+                const codeChildren = codeEl.props?.children;
+                const rawCode = extractCodeText(codeChildren);
 
-              if (!inline && match) {
                 return (
-                  <CodeBlock 
-                    language={match[1]} 
-                    value={codeText} 
-                    isDark={isDark} 
-                  />
+                  <CodeBlock
+                    language={lang}
+                    className={className}
+                    rawCode={rawCode}
+                    isDark={isDark}
+                  >
+                    {codeChildren}
+                  </CodeBlock>
                 );
               }
 
+              const rawCode = extractCodeText(children);
+              return (
+                <CodeBlock
+                  rawCode={rawCode}
+                  isDark={isDark}
+                >
+                  {children}
+                </CodeBlock>
+              );
+            },
+
+            // Standard inline code tags
+            code({ node, className, children, ...props }: any) {
               return (
                 <code className={className} {...props}>
                   {children}

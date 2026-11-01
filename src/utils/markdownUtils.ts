@@ -312,21 +312,46 @@ export function generateStandaloneHTML(title: string, renderedHTML: string): str
       margin: 1.4em 0;
       border-radius: 8px;
       overflow: hidden;
-      border: 1px solid #e2e8f0;
+      border: 1px solid #30363d;
+      background: #0d1117;
+      color: #c9d1d9;
     }
     .code-block-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      background: #1e293b;
-      color: #94a3b8;
+      background: #161b22;
+      color: #8b949e;
       padding: 6px 14px;
       font-size: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .code-block-wrapper pre {
+      margin: 0;
+      padding: 14px;
+      background: #0d1117;
+      color: #c9d1d9;
+      overflow-x: auto;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.9em;
+      line-height: 1.55;
+    }
+    .code-block-wrapper pre code {
+      color: #c9d1d9;
+      background: transparent;
       font-family: 'JetBrains Mono', monospace;
     }
     .copy-code-btn {
       display: none !important;
     }
+    .hljs-keyword, .hljs-type { color: #ff7b72; }
+    .hljs-title, .hljs-title.class_ { color: #d2a8ff; }
+    .hljs-attr, .hljs-number { color: #79c0ff; }
+    .hljs-string { color: #a5d6ff; }
+    .hljs-built_in { color: #ffa657; }
+    .hljs-comment { color: #8b949e; }
+    .hljs-name { color: #7ee787; }
     table {
       width: 100%;
       border-collapse: collapse;
