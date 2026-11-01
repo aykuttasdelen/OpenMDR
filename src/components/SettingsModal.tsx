@@ -26,6 +26,7 @@ interface SettingsModalProps {
   onFontSizeChange: (size: number) => void;
   defaultSavePath: string | null;
   onSelectDefaultSavePath: () => Promise<void>;
+  onSetDocumentsDefault?: () => Promise<void>;
   onClearDefaultSavePath: () => void;
   autoSaveEnabled: boolean;
   onToggleAutoSave: () => void;
@@ -46,6 +47,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onFontSizeChange,
   defaultSavePath,
   onSelectDefaultSavePath,
+  onSetDocumentsDefault,
   onClearDefaultSavePath,
   autoSaveEnabled,
   onToggleAutoSave,
@@ -226,7 +228,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </span>
                 </div>
 
-                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                  {onSetDocumentsDefault && (
+                    <button
+                      className="btn-secondary"
+                      onClick={onSetDocumentsDefault}
+                      style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px' }}
+                      title="Varsayılan olarak Belgeler klasörünü ayarla"
+                    >
+                      <FolderCheck size={13} color="var(--accent-primary)" />
+                      <span>{t('settings.useDocumentsDefault')}</span>
+                    </button>
+                  )}
                   {defaultSavePath && (
                     <button
                       className="btn-secondary"
@@ -346,16 +359,33 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <FileText size={32} color="#ffffff" />
               </div>
               <div>
-                <h2 style={{ fontSize: 20, fontWeight: 700, margin: '4px 0' }}>OpenMD</h2>
+                <h2 style={{ fontSize: 20, fontWeight: 700, margin: '4px 0' }}>OpenMDR</h2>
                 <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-                  {t('settings.aboutVersion')} 1.0.0
+                  {t('settings.aboutVersion')} 1.1.0
                 </div>
               </div>
-              <p style={{ fontSize: 13.5, color: 'var(--text-secondary)', maxWidth: 360, lineHeight: 1.5 }}>
+              <p style={{ fontSize: 13.5, color: 'var(--text-secondary)', maxWidth: 420, lineHeight: 1.5 }}>
                 {t('settings.aboutDesc')}
               </p>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 8 }}>
-                Built with Electron, React, TypeScript & CodeMirror 6
+              <div style={{ 
+                display: 'flex', 
+                flexDirection: 'column', 
+                gap: 6,
+                fontSize: 12, 
+                color: 'var(--text-secondary)', 
+                marginTop: 6,
+                background: 'var(--bg-surface)',
+                padding: '12px 18px',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid var(--border-subtle)',
+                textAlign: 'left',
+                width: '100%',
+                maxWidth: 420
+              }}>
+                <div>⚡ <strong>Mimari:</strong> Rust (Tauri v2) + React 19 + TypeScript + CodeMirror 6</div>
+                <div>🍎 <strong>Platform:</strong> macOS (Apple Silicon & Intel) Native WKWebView</div>
+                <div>👤 <strong>Geliştirici:</strong> Aykut Taşdelen</div>
+                <div>🔗 <strong>Kaynak Kod:</strong> <a href="https://github.com/aykuttasdelen/OpenMDR" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-primary)', textDecoration: 'none' }}>github.com/aykuttasdelen/OpenMDR</a></div>
               </div>
             </div>
           )}

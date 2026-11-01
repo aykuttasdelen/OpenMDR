@@ -42,6 +42,9 @@ export interface ElectronAPI {
   exportPDF: (htmlContent?: string, defaultTitle?: string) => Promise<boolean>;
   saveHTMLFile: (htmlContent: string, defaultName?: string) => Promise<boolean>;
   getAppVersion: () => Promise<string>;
+  getDocumentsDir?: () => Promise<string>;
+  getDefaultDocumentsDir?: () => Promise<string>;
+  toggleMaximize?: () => Promise<void>;
   setLanguage: (lang: string) => Promise<boolean>;
   closeWindow: (force?: boolean) => Promise<void>;
   cancelClose: () => Promise<boolean>;

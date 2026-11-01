@@ -11,7 +11,7 @@ interface TabBarProps {
   onNewTab: () => void;
 }
 
-export const TabBar: React.FC<TabBarProps> = ({
+export const TabBar: React.FC<TabBarProps> = React.memo(({
   tabs,
   activeTabId,
   onSelectTab,
@@ -63,4 +63,4 @@ export const TabBar: React.FC<TabBarProps> = ({
       </button>
     </div>
   );
-};
+});

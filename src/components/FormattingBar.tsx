@@ -23,7 +23,7 @@ interface FormattingBarProps {
   onInsert: (prefix: string, suffix?: string, defaultText?: string) => void;
 }
 
-export const FormattingBar: React.FC<FormattingBarProps> = ({ onInsert }) => {
+export const FormattingBar: React.FC<FormattingBarProps> = React.memo(({ onInsert }) => {
   const { t } = useTranslation();
 
   return (
@@ -154,4 +154,4 @@ export const FormattingBar: React.FC<FormattingBarProps> = ({ onInsert }) => {
       </button>
     </div>
   );
-};
+});

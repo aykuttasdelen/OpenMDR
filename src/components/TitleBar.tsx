@@ -33,7 +33,7 @@ interface TitleBarProps {
   onOpenSettings: () => void;
 }
 
-export const TitleBar: React.FC<TitleBarProps> = ({
+export const TitleBar: React.FC<TitleBarProps> = React.memo(({
   documentTitle,
   isModified,
   sidebarOpen,
@@ -51,8 +51,18 @@ export const TitleBar: React.FC<TitleBarProps> = ({
 }) => {
   const { t } = useTranslation();
 
+  const handleDoubleClick = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    if (target.closest('button') || target.closest('input') || target.closest('select')) {
+      return;
+    }
+    if (window.electronAPI?.toggleMaximize) {
+      window.electronAPI.toggleMaximize();
+    }
+  };
+
   return (
-    <header className="titlebar">
+    <header className="titlebar" data-tauri-drag-region onDoubleClick={handleDoubleClick}>
       {/* Left controls */}
       <div className="titlebar-left">
         <button 
@@ -85,11 +95,10 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         </button>
       </div>
 
-      {/* Center: Title */}
-      <div className="titlebar-center">
-        <div className="doc-title-badge">
-          {isModified && <span className="doc-modified-dot" title={t('titlebar.unsavedChanges')} />}
-          <span>{documentTitle}</span>
+      {/* Center: App Title */}
+      <div className="titlebar-center" data-tauri-drag-region>
+        <div className="doc-title-badge app-title-badge" data-tauri-drag-region>
+          <span className="app-title-text" data-tauri-drag-region>OpenMD</span>
         </div>
       </div>
 
@@ -161,4 +170,4 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       </div>
     </header>
   );
-};
+});

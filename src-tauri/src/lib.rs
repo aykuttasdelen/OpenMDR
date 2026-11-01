@@ -36,6 +36,26 @@ fn close_window(
 }
 
 #[tauri::command]
+fn get_default_documents_dir(app: tauri::AppHandle) -> Result<String, String> {
+    app.path()
+        .document_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn toggle_maximize(window: tauri::Window) -> Result<(), String> {
+    if let Ok(is_max) = window.is_maximized() {
+        if is_max {
+            let _ = window.unmaximize();
+        } else {
+            let _ = window.maximize();
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn cancel_close(state: State<AppState>) -> Result<(), String> {
     state.force_close.store(false, Ordering::SeqCst);
     Ok(())
@@ -87,6 +107,8 @@ pub fn run() {
             dialogs::open_directory_dialog,
             export_ops::save_html,
             set_menu_language,
+            get_default_documents_dir,
+            toggle_maximize,
             close_window,
             cancel_close,
         ])

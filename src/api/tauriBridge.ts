@@ -138,6 +138,18 @@ export const tauriAPI = {
     return '1.1.0';
   },
 
+  getDocumentsDir: async (): Promise<string> => {
+    return invoke<string>('get_default_documents_dir');
+  },
+
+  getDefaultDocumentsDir: async (): Promise<string> => {
+    return invoke<string>('get_default_documents_dir');
+  },
+
+  toggleMaximize: async (): Promise<void> => {
+    return invoke<void>('toggle_maximize');
+  },
+
   setLanguage: async (lang: string): Promise<boolean> => {
     try {
       await invoke<void>('set_menu_language', { lang });

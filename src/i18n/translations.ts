@@ -26,7 +26,7 @@ export const translations: Record<Language, Translations> = {
     'app.fileOpenError': 'Dosya açılamadı: {error}',
     'app.folderOpenError': 'Klasör açma hatası: {error}',
     'app.errorPrefix': 'Hata: {error}',
-    'app.electronOnly': 'Klasör açma özelliği Electron masaüstü ortamında desteklenir.',
+    'app.electronOnly': 'Klasör açma özelliği masaüstü uygulamasında desteklenir.',
 
     // TitleBar
     'titlebar.sidebarToggle': 'Kenar Çubuğu (Cmd+\\)',
@@ -175,7 +175,8 @@ export const translations: Record<Language, Translations> = {
     'settings.fontSize': 'Editör Yazı Boyutu',
     'settings.fontSizeDesc': 'Editör ve önizlemedeki temel metin boyutu (varsayılan: 14px).',
     'settings.aboutVersion': 'Sürüm',
-    'settings.aboutDesc': 'macOS için modern, zarif ve hızlı Markdown editörü.',
+    'settings.aboutDesc': 'macOS için ultra hafif, modern ve yüksek performanslı Rust + Tauri v2 Markdown & MDX editörü.',
+    'settings.useDocumentsDefault': 'Varsayılan Yap (Belgeler)',
     'settings.close': 'Kapat'
   },
   en: {
@@ -199,7 +200,7 @@ export const translations: Record<Language, Translations> = {
     'app.fileOpenError': 'Could not open file: {error}',
     'app.folderOpenError': 'Error opening folder: {error}',
     'app.errorPrefix': 'Error: {error}',
-    'app.electronOnly': 'Opening folders is supported in the Electron desktop environment.',
+    'app.electronOnly': 'Opening folders is supported in the desktop application.',
 
     // TitleBar
     'titlebar.sidebarToggle': 'Sidebar (Cmd+\\)',
@@ -348,7 +349,8 @@ export const translations: Record<Language, Translations> = {
     'settings.fontSize': 'Editor Font Size',
     'settings.fontSizeDesc': 'Base font size for editor and preview (default: 14px).',
     'settings.aboutVersion': 'Version',
-    'settings.aboutDesc': 'Modern, elegant, and fast Markdown editor for macOS.',
+    'settings.aboutDesc': 'Ultra-fast, modern, and high-performance Rust + Tauri v2 Markdown & MDX editor for macOS.',
+    'settings.useDocumentsDefault': 'Set Default (Documents)',
     'settings.close': 'Close'
   }
 };

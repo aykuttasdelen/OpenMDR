@@ -49,7 +49,7 @@ interface InlineCreationState {
   parentPath: string;
 }
 
-export const Sidebar: React.FC<SidebarProps> = ({
+export const Sidebar: React.FC<SidebarProps> = React.memo(({
   isOpen,
   rootPath,
   fileTree,
@@ -617,4 +617,4 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
     </aside>
   );
-};
+});

@@ -114,19 +114,18 @@ html, body, #root {
   padding-right: 16px;
   background: var(--bg-sidebar);
   border-bottom: 1px solid var(--border-subtle);
-  -webkit-app-region: drag;
   position: relative;
   z-index: 50;
-  backdrop-filter: blur(20px);
+  user-select: none;
 }
 
 .titlebar-left,
-.titlebar-center,
 .titlebar-right {
   display: flex;
   align-items: center;
   gap: 8px;
-  -webkit-app-region: no-drag;
+  position: relative;
+  z-index: 2;
 }
 
 .titlebar-center {
@@ -134,23 +133,34 @@ html, body, #root {
   left: 50%;
   transform: translateX(-50%);
   max-width: 45%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.doc-title-badge {
+.doc-title-badge,
+.app-title-badge {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--text-primary);
-  padding: 4px 10px;
+  padding: 4px 14px;
   border-radius: var(--radius-sm);
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
+  letter-spacing: 0.2px;
   max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: default;
+}
+
+.app-title-text {
+  font-weight: 650;
+  letter-spacing: 0.3px;
 }
 
 .doc-modified-dot {
@@ -446,6 +456,7 @@ html, body, #root {
   flex-direction: column;
   overflow: hidden;
   height: 100%;
+  transition: none !important;
 }
 
 .editor-pane {
@@ -456,6 +467,21 @@ html, body, #root {
 .preview-pane {
   background-color: var(--bg-surface);
   height: 100%;
+}
+
+/* Smooth Dragging & Resizing Optimization */
+body.is-resizing,
+body.is-resizing * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+body.is-resizing .editor-pane,
+body.is-resizing .preview-pane,
+body.is-resizing .preview-content,
+body.is-resizing .cm-editor,
+body.is-resizing iframe {
+  pointer-events: none !important;
 }
 
 /* Sidebar Resizer */

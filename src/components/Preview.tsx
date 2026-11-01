@@ -119,7 +119,7 @@ function cleanCalloutChildren(children: React.ReactNode, tag: string): React.Rea
   });
 }
 
-export const Preview: React.FC<PreviewProps> = ({ 
+export const Preview: React.FC<PreviewProps> = React.memo(({ 
   content, 
   theme, 
   fontSize = 14,
@@ -278,4 +278,4 @@ export const Preview: React.FC<PreviewProps> = ({
       </div>
     </div>
   );
-};
+});

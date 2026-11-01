@@ -14,7 +14,7 @@ interface StatusBarProps {
   onResetZoom?: () => void;
 }
 
-export const StatusBar: React.FC<StatusBarProps> = ({ 
+export const StatusBar: React.FC<StatusBarProps> = React.memo(({ 
   stats, 
   cursorPos,
   fontSize = 14,
@@ -96,4 +96,4 @@ export const StatusBar: React.FC<StatusBarProps> = ({
       </div>
     </footer>
   );
-};
+});

@@ -220,13 +220,27 @@ export const App: React.FC = () => {
     localStorage.setItem(STORAGE_KEYS.FONT_SIZE, String(fontSize));
   }, [fontSize]);
 
+  // Initialize default save path to Documents if not already configured
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.SPLIT_RATIO, String(splitRatio));
-  }, [splitRatio]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.SIDEBAR_WIDTH, String(sidebarWidth));
-  }, [sidebarWidth]);
+    const initDefaultDocumentsPath = async () => {
+      const saved = localStorage.getItem(STORAGE_KEYS.DEFAULT_SAVE_PATH);
+      if (!saved && window.electronAPI) {
+        try {
+          const docFn = window.electronAPI.getDefaultDocumentsDir || window.electronAPI.getDocumentsDir;
+          if (docFn) {
+            const dir = await docFn();
+            if (dir) {
+              setDefaultSavePath(dir);
+              localStorage.setItem(STORAGE_KEYS.DEFAULT_SAVE_PATH, dir);
+            }
+          }
+        } catch (err) {
+          console.warn('Failed to retrieve default documents directory:', err);
+        }
+      }
+    };
+    initDefaultDocumentsPath();
+  }, []);
 
   useEffect(() => {
     if (defaultSavePath) {
@@ -357,8 +371,8 @@ export const App: React.FC = () => {
     }
   };
 
-  // Safe new file creation with smart numbering
-  const handleNewFile = useCallback(() => {
+  // Safe new file creation with smart numbering defaulting to Documents
+  const handleNewFile = useCallback(async () => {
     const newId = `tab-${Date.now()}`;
     const untitledPrefix = t('app.untitled');
     const untitledRegex = new RegExp(`^${untitledPrefix}(?: (\\d+))?\\.md$`);
@@ -372,9 +386,21 @@ export const App: React.FC = () => {
     });
 
     const newTitle = maxNum === 0 ? `${untitledPrefix}.md` : `${untitledPrefix} ${maxNum + 1}.md`;
+
+    // Resolve target path under defaultSavePath (Documents) if available
+    let initialFilePath: string | undefined = undefined;
+    if (defaultSavePath && window.electronAPI?.getAvailablePath) {
+      try {
+        initialFilePath = await window.electronAPI.getAvailablePath(defaultSavePath, newTitle);
+      } catch (e) {
+        console.warn('Failed to resolve initial file path for new file:', e);
+      }
+    }
+
     const newTab: Tab = {
       id: newId,
       title: newTitle,
+      filePath: initialFilePath,
       content: `# ${newTitle.replace(/\.md$/, '')}\n\n`,
       savedContent: '',
       isModified: false
@@ -383,7 +409,7 @@ export const App: React.FC = () => {
     setTabs(prev => [...prev, newTab]);
     setActiveTabId(newId);
     setTimeout(() => editorRef.current?.focus(), 60);
-  }, [tabs, t]);
+  }, [tabs, defaultSavePath, t]);
 
   const openFileInTab = useCallback((filePath: string, name: string, content: string) => {
     const existing = tabs.find(t => t.filePath === filePath);
@@ -656,6 +682,24 @@ export const App: React.FC = () => {
 
   const handleClearDefaultSavePath = () => {
     setDefaultSavePath(null);
+  };
+
+  const handleSetDocumentsDefault = async () => {
+    if (!window.electronAPI) return;
+    try {
+      const docFn = window.electronAPI.getDefaultDocumentsDir || window.electronAPI.getDocumentsDir;
+      if (docFn) {
+        const dir = await docFn();
+        if (dir) {
+          setDefaultSavePath(dir);
+          setAutoSaveEnabled(true);
+          setAutoSaveToDefault(true);
+          setDismissedPrompt(true);
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to set documents as default:', e);
+    }
   };
 
   const handleCreateFileInFolder = async (dirPath: string, fileName: string) => {
@@ -977,58 +1021,99 @@ export const App: React.FC = () => {
     };
   }, [openFileInTab, filterMdOnly]);
 
-  // Split Pane Resizing Handlers
+  // Keep refs for smooth mouseup localStorage persistence
+  const splitRatioRef = useRef(splitRatio);
+  useEffect(() => {
+    splitRatioRef.current = splitRatio;
+  }, [splitRatio]);
+
+  const sidebarWidthRef = useRef(sidebarWidth);
+  useEffect(() => {
+    sidebarWidthRef.current = sidebarWidth;
+  }, [sidebarWidth]);
+
+  // Split Pane Resizing Handlers with requestAnimationFrame & is-resizing guard
   const handleSplitMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
     setIsDraggingSplit(true);
+    document.body.classList.add('is-resizing');
   };
 
   useEffect(() => {
     if (!isDraggingSplit) return;
 
+    let rafId: number | null = null;
+
     const handleMouseMove = (e: MouseEvent) => {
-      if (!splitPaneRef.current) return;
-      const rect = splitPaneRef.current.getBoundingClientRect();
-      const offset = e.clientX - rect.left;
-      const newRatio = Math.max(20, Math.min(80, (offset / rect.width) * 100));
-      setSplitRatio(newRatio);
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        if (!splitPaneRef.current) return;
+        const rect = splitPaneRef.current.getBoundingClientRect();
+        const offset = e.clientX - rect.left;
+        const newRatio = Math.max(20, Math.min(80, (offset / rect.width) * 100));
+        setSplitRatio(newRatio);
+      });
     };
 
     const handleMouseUp = () => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
       setIsDraggingSplit(false);
+      document.body.classList.remove('is-resizing');
+      localStorage.setItem(STORAGE_KEYS.SPLIT_RATIO, String(splitRatioRef.current));
     };
 
-    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mousemove', handleMouseMove, { passive: true });
     window.addEventListener('mouseup', handleMouseUp);
     return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
+      document.body.classList.remove('is-resizing');
     };
   }, [isDraggingSplit]);
 
-  // Sidebar Resizing Handlers
+  // Sidebar Resizing Handlers with requestAnimationFrame & is-resizing guard
   const handleSidebarMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
     setIsDraggingSidebar(true);
+    document.body.classList.add('is-resizing');
   };
 
   useEffect(() => {
     if (!isDraggingSidebar) return;
 
+    let rafId: number | null = null;
+
     const handleMouseMove = (e: MouseEvent) => {
-      const newWidth = Math.max(180, Math.min(500, e.clientX));
-      setSidebarWidth(newWidth);
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        const newWidth = Math.max(180, Math.min(500, e.clientX));
+        setSidebarWidth(newWidth);
+      });
     };
 
     const handleMouseUp = () => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
       setIsDraggingSidebar(false);
+      document.body.classList.remove('is-resizing');
+      localStorage.setItem(STORAGE_KEYS.SIDEBAR_WIDTH, String(sidebarWidthRef.current));
     };
 
-    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mousemove', handleMouseMove, { passive: true });
     window.addEventListener('mouseup', handleMouseUp);
     return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
+      document.body.classList.remove('is-resizing');
     };
   }, [isDraggingSidebar]);
 
@@ -1389,6 +1474,7 @@ export const App: React.FC = () => {
         onFontSizeChange={setFontSize}
         defaultSavePath={defaultSavePath}
         onSelectDefaultSavePath={handleSelectDefaultSavePath}
+        onSetDocumentsDefault={handleSetDocumentsDefault}
         onClearDefaultSavePath={handleClearDefaultSavePath}
         autoSaveEnabled={autoSaveEnabled}
         onToggleAutoSave={() => setAutoSaveEnabled(prev => !prev)}
