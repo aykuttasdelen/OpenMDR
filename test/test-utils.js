@@ -10,7 +10,8 @@ import {
   getBasename,
   getDirname,
   getImageExtension,
-  resolveRelativeImagePath
+  resolveRelativeImagePath,
+  getNextUntitledTitle
 } from '../src/utils/markdownUtils.ts';
 
 console.log('--- Testing Markdown Utilities ---');
@@ -453,6 +454,15 @@ assert.strictEqual(resultSuccess.aborted, false, 'Save all should succeed');
 assert.strictEqual(resultSuccess.tabs[0].isModified, false);
 assert.strictEqual(resultSuccess.tabs[1].isModified, false);
 console.log('✓ Unsaved save-all abort safety test passed');
+
+// Test 16: getNextUntitledTitle collision-free numbering
+assert.strictEqual(getNextUntitledTitle([], 'İsimsiz'), 'İsimsiz.md');
+assert.strictEqual(getNextUntitledTitle(['İsimsiz.md'], 'İsimsiz'), 'İsimsiz 2.md');
+assert.strictEqual(getNextUntitledTitle(['İsimsiz.md', 'İsimsiz 2.md'], 'İsimsiz'), 'İsimsiz 3.md');
+assert.strictEqual(getNextUntitledTitle(['İsimsiz.md', 'İsimsiz2.md'], 'İsimsiz'), 'İsimsiz 3.md');
+assert.strictEqual(getNextUntitledTitle(['/Users/aykut/Documents/İsimsiz.md', 'İsimsiz 2.md'], 'İsimsiz'), 'İsimsiz 3.md');
+assert.strictEqual(getNextUntitledTitle(['Untitled.md'], 'Untitled'), 'Untitled 2.md');
+console.log('✓ getNextUntitledTitle collision-free numbering test passed');
 
 console.log('\nAll automated tests passed successfully! 🎉');
 

@@ -234,9 +234,24 @@ pub async fn get_available_path(base_dir: String, file_name: String) -> Result<S
         .map(|e| format!(".{}", e))
         .unwrap_or_else(|| ".md".to_string());
 
+    // Clean stem from trailing numbering e.g. "İsimsiz 2" or "İsimsiz2" -> "İsimsiz"
+    let clean_stem = {
+        let trimmed = stem.trim_end();
+        if let Some(pos) = trimmed.rfind(|c: char| !c.is_ascii_digit()) {
+            let (prefix, digits) = trimmed.split_at(pos + 1);
+            if !digits.is_empty() {
+                prefix.trim_end().to_string()
+            } else {
+                stem.clone()
+            }
+        } else {
+            stem.clone()
+        }
+    };
+
     let mut counter = 2;
     loop {
-        candidate = base.join(format!("{} {}{}", stem, counter, ext));
+        candidate = base.join(format!("{} {}{}", clean_stem, counter, ext));
         if !candidate.exists() {
             return Ok(candidate.to_string_lossy().to_string());
         }

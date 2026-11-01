@@ -142,10 +142,23 @@ mod tests {
 
         fs::write(&path2, "hello 2").unwrap();
 
-        let path3 = fs_ops::get_available_path(base, "Test.md".to_string())
+        let path3 = fs_ops::get_available_path(base.clone(), "Test.md".to_string())
             .await
             .unwrap();
         assert!(path3.ends_with("Test 3.md"));
+
+        // If candidate already has numbering like "Test 2.md", it should properly increment to "Test 3.md"
+        let path4 = fs_ops::get_available_path(base.clone(), "Test 2.md".to_string())
+            .await
+            .unwrap();
+        assert!(path4.ends_with("Test 3.md"));
+
+        // If candidate has numbering like "Test2.md" with Test2 created on disk
+        fs::write(dir.path().join("Test2.md"), "hello test2").unwrap();
+        let path5 = fs_ops::get_available_path(base, "Test2.md".to_string())
+            .await
+            .unwrap();
+        assert!(path5.ends_with("Test 3.md"));
     }
 
     #[tokio::test]

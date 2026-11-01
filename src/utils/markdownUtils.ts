@@ -180,6 +180,44 @@ export function isMarkdownFileName(fileName: string): boolean {
 }
 
 /**
+ * Determines the next available untitled filename avoiding collisions with open tabs.
+ * Supports both "İsimsiz", "İsimsiz 2", "İsimsiz2", "Untitled", etc.
+ */
+export function getNextUntitledTitle(
+  existingTitles: string[],
+  prefix: string = 'İsimsiz'
+): string {
+  const normalizedPrefix = prefix.trim();
+  const escapedPrefix = normalizedPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(`^(?:${escapedPrefix}|İsimsiz|Untitled)(?: ?(\\d+))?\\.md$`, 'i');
+
+  const usedNumbers = new Set<number>();
+  let hasBase = false;
+
+  for (const title of existingTitles) {
+    const cleanTitle = getBasename(title).trim();
+    const match = cleanTitle.match(regex);
+    if (match) {
+      if (match[1]) {
+        usedNumbers.add(parseInt(match[1], 10));
+      } else {
+        hasBase = true;
+      }
+    }
+  }
+
+  if (!hasBase) {
+    return `${normalizedPrefix}.md`;
+  }
+
+  let counter = 2;
+  while (usedNumbers.has(counter)) {
+    counter++;
+  }
+  return `${normalizedPrefix} ${counter}.md`;
+}
+
+/**
  * Combines default directory and file name safely
  */
 export function getDefaultSaveFilePath(defaultDir: string, fileName: string): string {

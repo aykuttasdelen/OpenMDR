@@ -21,7 +21,8 @@ import {
   getDirname,
   isMarkdownFileName,
   getDefaultSaveFilePath,
-  getUnsavedTabs
+  getUnsavedTabs,
+  getNextUntitledTitle
 } from './utils/markdownUtils';
 import { 
   FilePlus, 
@@ -371,45 +372,77 @@ export const App: React.FC = () => {
     }
   };
 
-  // Safe new file creation with smart numbering defaulting to Documents
+  // Safe new file creation with instant on-disk auto-save and collision-free naming
   const handleNewFile = useCallback(async () => {
     const newId = `tab-${Date.now()}`;
-    const untitledPrefix = t('app.untitled');
-    const untitledRegex = new RegExp(`^${untitledPrefix}(?: (\\d+))?\\.md$`);
-    let maxNum = 0;
-    tabs.forEach(t => {
-      const match = t.title.match(untitledRegex);
-      if (match) {
-        const num = match[1] ? parseInt(match[1], 10) : 1;
-        if (num > maxNum) maxNum = num;
+    const untitledPrefix = t('app.untitled') || 'İsimsiz';
+
+    // 1. Determine target directory (Documents or active default save path)
+    let targetDir = defaultSavePath;
+    if (!targetDir && window.electronAPI) {
+      try {
+        const docFn = window.electronAPI.getDefaultDocumentsDir || window.electronAPI.getDocumentsDir;
+        if (docFn) {
+          targetDir = await docFn();
+          if (targetDir) {
+            setDefaultSavePath(targetDir);
+            localStorage.setItem(STORAGE_KEYS.DEFAULT_SAVE_PATH, targetDir);
+          }
+        }
+      } catch (err) {
+        console.warn('Failed to resolve target directory for new file:', err);
       }
+    }
+
+    // 2. Collect all existing open tab titles to avoid collisions with open unsaved/saved tabs
+    const existingTitles = tabs.map(t => t.title);
+    tabs.forEach(t => {
+      if (t.filePath) existingTitles.push(getBasename(t.filePath));
     });
 
-    const newTitle = maxNum === 0 ? `${untitledPrefix}.md` : `${untitledPrefix} ${maxNum + 1}.md`;
+    const candidateTitle = getNextUntitledTitle(existingTitles, untitledPrefix);
+    let finalTitle = candidateTitle;
+    let finalFilePath: string | undefined = undefined;
 
-    // Resolve target path under defaultSavePath (Documents) if available
-    let initialFilePath: string | undefined = undefined;
-    if (defaultSavePath && window.electronAPI?.getAvailablePath) {
+    // 3. Resolve candidate with disk file collision check
+    if (targetDir && window.electronAPI?.getAvailablePath) {
       try {
-        initialFilePath = await window.electronAPI.getAvailablePath(defaultSavePath, newTitle);
+        finalFilePath = await window.electronAPI.getAvailablePath(targetDir, candidateTitle);
+        finalTitle = getBasename(finalFilePath);
       } catch (e) {
-        console.warn('Failed to resolve initial file path for new file:', e);
+        console.warn('Failed to resolve available path on disk:', e);
+      }
+    }
+
+    const initialContent = `# ${finalTitle.replace(/\.md$/, '')}\n\n`;
+
+    // 4. Automatically save file to disk immediately upon tab creation
+    if (finalFilePath && window.electronAPI?.writeFile) {
+      try {
+        await window.electronAPI.writeFile(finalFilePath, initialContent);
+      } catch (e) {
+        console.error('Failed to pre-create new file on disk:', e);
       }
     }
 
     const newTab: Tab = {
       id: newId,
-      title: newTitle,
-      filePath: initialFilePath,
-      content: `# ${newTitle.replace(/\.md$/, '')}\n\n`,
-      savedContent: '',
+      title: finalTitle,
+      filePath: finalFilePath,
+      content: initialContent,
+      savedContent: initialContent,
       isModified: false
     };
 
     setTabs(prev => [...prev, newTab]);
     setActiveTabId(newId);
     setTimeout(() => editorRef.current?.focus(), 60);
-  }, [tabs, defaultSavePath, t]);
+
+    // Refresh tree if created inside workspace
+    if (rootFolderPath && finalFilePath?.startsWith(rootFolderPath)) {
+      handleRefreshTree();
+    }
+  }, [tabs, defaultSavePath, rootFolderPath, handleRefreshTree, t]);
 
   const openFileInTab = useCallback((filePath: string, name: string, content: string) => {
     const existing = tabs.find(t => t.filePath === filePath);
