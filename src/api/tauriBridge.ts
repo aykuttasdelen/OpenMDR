@@ -92,6 +92,16 @@ export const tauriAPI = {
     return invoke<string>('save_image', { baseDir, base64Data, mimeType });
   },
 
+  readImageBase64: async (
+    filePath: string,
+    baseDir?: string
+  ): Promise<string> => {
+    return invoke<string>('read_image_base64', {
+      filePath,
+      baseDir: baseDir || null,
+    });
+  },
+
   showInFolder: async (filePath: string): Promise<void> => {
     return invoke<void>('show_in_folder', { filePath });
   },

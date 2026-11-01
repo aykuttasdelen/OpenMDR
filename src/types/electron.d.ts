@@ -63,6 +63,7 @@ export interface ElectronAPI {
   readFile: (filePath: string) => Promise<string>;
   writeFile: (filePath: string, content: string) => Promise<boolean>;
   saveImage: (baseDir: string, base64Data: string, mimeType: string) => Promise<string>;
+  readImageBase64?: (filePath: string, baseDir?: string) => Promise<string>;
   openFileDialog: () => Promise<{ filePath: string; content: string; name: string } | null>;
   openPdfDialog?: () => Promise<string | null>;
   saveFileDialog: (defaultName?: string, content?: string, defaultDir?: string) => Promise<string | null>;

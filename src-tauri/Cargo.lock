@@ -2453,6 +2453,7 @@ dependencies = [
  "base64 0.22.1",
  "objc2",
  "objc2-app-kit",
+ "percent-encoding",
  "rfd 0.15.4",
  "serde",
  "serde_json",

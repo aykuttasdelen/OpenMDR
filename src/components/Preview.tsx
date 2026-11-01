@@ -144,6 +144,59 @@ function cleanCalloutChildren(children: React.ReactNode, tag: string): React.Rea
   });
 }
 
+// Resilient image renderer with Tauri asset protocol and binary base64 auto-fallback
+const PreviewImage: React.FC<{
+  src?: string;
+  alt?: string;
+  effectiveBaseDir?: string;
+  [key: string]: any;
+}> = ({ src = '', alt = '', effectiveBaseDir, style, ...props }) => {
+  const [currentSrc, setCurrentSrc] = useState(() => resolveRelativeImagePath(src, effectiveBaseDir));
+  const hasAttemptedFallback = useRef(false);
+
+  useEffect(() => {
+    setCurrentSrc(resolveRelativeImagePath(src, effectiveBaseDir));
+    hasAttemptedFallback.current = false;
+  }, [src, effectiveBaseDir]);
+
+  const handleError = async (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
+    if (hasAttemptedFallback.current) return;
+    hasAttemptedFallback.current = true;
+
+    // If custom protocol asset:// or file:// failed, invoke native Tauri fallback to read binary directly
+    if (window.electronAPI?.readImageBase64 && src && !src.startsWith('data:') && !src.startsWith('http')) {
+      try {
+        const base64Src = await window.electronAPI.readImageBase64(src, effectiveBaseDir);
+        if (base64Src) {
+          setCurrentSrc(base64Src);
+          return;
+        }
+      } catch (err) {
+        console.warn('Native fallback failed for image:', src, err);
+      }
+    }
+  };
+
+  return (
+    <img
+      src={currentSrc}
+      alt={alt}
+      loading="lazy"
+      onError={handleError}
+      style={{
+        maxWidth: '100%',
+        height: 'auto',
+        borderRadius: 'var(--radius-sm)',
+        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08)',
+        margin: '8px 0',
+        display: 'block',
+        ...style
+      }}
+      {...props}
+    />
+  );
+};
+
 export const Preview: React.FC<PreviewProps> = React.memo(({ 
   content, 
   theme, 
@@ -227,31 +280,15 @@ export const Preview: React.FC<PreviewProps> = React.memo(({
               );
             },
 
-            // Responsive image renderer with local asset resolution
+            // Responsive image renderer with local asset resolution & auto-fallback
             img({ src, alt, ...props }: any) {
               const effectiveBaseDir = activeFilePath ? getDirname(activeFilePath) : (baseDir || rootPath);
-              const resolvedSrc = resolveRelativeImagePath(src || '', effectiveBaseDir);
               return (
-                <img 
-                  src={resolvedSrc} 
-                  alt={alt || ''} 
-                  loading="lazy"
-                  style={{
-                    maxWidth: '100%',
-                    height: 'auto',
-                    borderRadius: 'var(--radius-sm)',
-                    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08)',
-                    margin: '8px 0',
-                    display: 'block'
-                  }}
-                  onError={(e) => {
-                    const target = e.currentTarget;
-                    if (!target.dataset.hasFailed) {
-                      target.dataset.hasFailed = 'true';
-                      console.warn('Preview image load error for src:', resolvedSrc);
-                    }
-                  }}
-                  {...props} 
+                <PreviewImage
+                  src={src}
+                  alt={alt}
+                  effectiveBaseDir={effectiveBaseDir}
+                  {...props}
                 />
               );
             },

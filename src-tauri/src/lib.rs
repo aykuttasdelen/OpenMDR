@@ -120,6 +120,18 @@ pub fn run() {
             let menu = build_app_menu(handle, false)?;
             app.set_menu(menu)?;
 
+            // Allow asset protocol to load files from local filesystems (e.g. assets/ for markdown preview)
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = app.asset_protocol_scope().allow_directory("/", true);
+            }
+            #[cfg(target_os = "windows")]
+            {
+                if let Ok(home) = app.path().home_dir() {
+                    let _ = app.asset_protocol_scope().allow_directory(home, true);
+                }
+            }
+
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -144,6 +156,7 @@ pub fn run() {
             fs_ops::get_available_path,
             fs_ops::show_in_folder,
             image_ops::save_image,
+            image_ops::read_image_base64,
             dialogs::open_file_dialog,
             dialogs::open_pdf_dialog,
             dialogs::save_file_dialog,
@@ -222,7 +235,19 @@ mod tests {
 
         let file_path = dir.path().join(&res);
         assert!(file_path.exists());
-        assert_eq!(fs::metadata(file_path).unwrap().len(), 70);
+        assert_eq!(fs::metadata(&file_path).unwrap().len(), 70);
+
+        // Test read_image_base64 with relative path and base_dir
+        let read_res = image_ops::read_image_base64(res.clone(), Some(base.clone()))
+            .await
+            .unwrap();
+        assert!(read_res.starts_with("data:image/png;base64,"));
+
+        // Test read_image_base64 with absolute path
+        let abs_read = image_ops::read_image_base64(file_path.to_str().unwrap().to_string(), None)
+            .await
+            .unwrap();
+        assert!(abs_read.starts_with("data:image/png;base64,"));
     }
 
     #[test]
