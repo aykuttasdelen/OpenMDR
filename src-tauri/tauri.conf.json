@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "OpenMDR",
+  "productName": "OpenMD",
   "version": "1.1.0",
-  "identifier": "com.openmdr.editor",
+  "identifier": "com.openmd.editor",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "OpenMDR",
+        "title": "OpenMD",
         "label": "main",
         "width": 1280,
         "height": 840,

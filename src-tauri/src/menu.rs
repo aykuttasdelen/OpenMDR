@@ -4,20 +4,20 @@ use tauri::{AppHandle, Emitter, Wry};
 pub fn build_app_menu(app: &AppHandle, is_english: bool) -> Result<Menu<Wry>, tauri::Error> {
     let app_menu = Submenu::with_items(
         app,
-        "OpenMDR",
+        "OpenMD",
         true,
         &[
-            &PredefinedMenuItem::about(app, Some(if is_english { "About OpenMDR" } else { "OpenMDR Hakkında" }), None)?,
+            &PredefinedMenuItem::about(app, Some(if is_english { "About OpenMD" } else { "OpenMD Hakkında" }), None)?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, "open-settings", if is_english { "Settings..." } else { "Ayarlar..." }, true, Some("CmdOrCtrl+,"))?,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::services(app, Some(if is_english { "Services" } else { "Hizmetler" }))?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::hide(app, Some(if is_english { "Hide OpenMDR" } else { "OpenMDR'yi Gizle" }))?,
+            &PredefinedMenuItem::hide(app, Some(if is_english { "Hide OpenMD" } else { "OpenMD'yi Gizle" }))?,
             &PredefinedMenuItem::hide_others(app, Some(if is_english { "Hide Others" } else { "Diğerlerini Gizle" }))?,
             &PredefinedMenuItem::show_all(app, Some(if is_english { "Show All" } else { "Tümünü Göster" }))?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::quit(app, Some(if is_english { "Quit OpenMDR" } else { "OpenMDR'den Çık" }))?,
+            &PredefinedMenuItem::quit(app, Some(if is_english { "Quit OpenMD" } else { "OpenMD'den Çık" }))?,
         ],
     )?;
 

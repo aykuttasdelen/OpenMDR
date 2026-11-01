@@ -1,7 +1,7 @@
-# OpenMDR 🚀
+# OpenMD 🚀
 
 <p align="center">
-  <img src="src-tauri/icons/128x128@2x.png" alt="OpenMDR Logo" width="120" height="120" />
+  <img src="src-tauri/icons/128x128@2x.png" alt="OpenMD Logo" width="120" height="120" />
 </p>
 
 <p align="center">
@@ -23,15 +23,15 @@
 
 ## 📖 Overview
 
-**OpenMDR** is a desktop Markdown and MDX editing environment designed specifically for macOS. By replacing heavy Electron runtimes with a high-performance **Rust backend** and leveraging macOS's built-in **`WKWebView`** via **Tauri v2**, OpenMDR delivers instantaneous startup times, minimal memory consumption (~35MB RAM), and deep macOS desktop integration without compromising on rich web-native editing features.
+**OpenMD** is a desktop Markdown and MDX editing environment designed specifically for macOS. By replacing heavy Electron runtimes with a high-performance **Rust backend** and leveraging macOS's built-in **`WKWebView`** via **Tauri v2**, OpenMD delivers instantaneous startup times, minimal memory consumption (~35MB RAM), and deep macOS desktop integration without compromising on rich web-native editing features.
 
-Whether you're taking notes, writing technical documentation with **KaTeX** math formulas, or sketching architectures with **Mermaid.js** diagrams, OpenMDR provides an uninterrupted, distraction-free workflow.
+Whether you're taking notes, writing technical documentation with **KaTeX** math formulas, or sketching architectures with **Mermaid.js** diagrams, OpenMD provides an uninterrupted, distraction-free workflow.
 
 ---
 
 ## ⚡ Architectural Highlights
 
-OpenMDR adopts a **Web-Native Hybrid Architecture**:
+OpenMD adopts a **Web-Native Hybrid Architecture**:
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -60,9 +60,9 @@ OpenMDR adopts a **Web-Native Hybrid Architecture**:
 
 ---
 
-## 📊 Comparison: OpenMDR vs. Traditional Editors
+## 📊 Comparison: OpenMD vs. Traditional Editors
 
-| Metric / Feature | Legacy Electron Editors | Pure Native (Swift/AppKit) | **OpenMDR (Rust + Tauri v2)** |
+| Metric / Feature | Legacy Electron Editors | Pure Native (Swift/AppKit) | **OpenMD (Rust + Tauri v2)** |
 | :--- | :--- | :--- | :--- |
 | **Idle Memory (RAM)** | ~180 MB – 320 MB | ~20 MB – 45 MB | **~35 MB – 55 MB** ⚡ |
 | **Binary Bundle Size** | ~120 MB – 250 MB | ~10 MB – 25 MB | **~25 MB – 35 MB** 📦 |
@@ -82,7 +82,7 @@ OpenMDR adopts a **Web-Native Hybrid Architecture**:
 
 ### 🖼️ Smart Clipboard Image Paste
 * Copy any image to your clipboard and hit **`Cmd + V`** inside the editor.
-* OpenMDR automatically decodes the image, writes a collision-free PNG file to `assets/paste-{timestamp}.png`, and inserts the relative Markdown image link at your cursor.
+* OpenMD automatically decodes the image, writes a collision-free PNG file to `assets/paste-{timestamp}.png`, and inserts the relative Markdown image link at your cursor.
 
 ### 📁 Workspace & Explorer
 * **Recursive Folder Explorer:** High-speed directory scanner powered by Rust async threads.
@@ -162,7 +162,7 @@ npm install
 
 ### Running in Development
 
-Launch OpenMDR with Vite hot-reloading and the native Tauri window:
+Launch OpenMD with Vite hot-reloading and the native Tauri window:
 
 ```bash
 npm run dev:tauri
@@ -200,7 +200,7 @@ src-tauri/target/release/bundle/macos/
 ## 📂 Project Structure
 
 ```
-OpenMDR/
+OpenMD/
 ├── src/                    # React 19 + TypeScript Frontend
 │   ├── api/                # Tauri IPC Bridge & window.electronAPI adapter
 │   ├── components/         # Editor, Preview, Sidebar, TabBar, Modals

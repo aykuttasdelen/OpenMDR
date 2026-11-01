@@ -2420,7 +2420,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "openmdr"
+name = "openmd"
 version = "1.1.0"
 dependencies = [
  "base64 0.22.1",

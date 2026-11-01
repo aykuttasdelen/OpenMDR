@@ -1,12 +1,12 @@
 [package]
-name = "openmdr"
+name = "openmd"
 version = "1.1.0"
 description = "Modern, elegant Markdown & MDX Editor for macOS (Rust + Tauri v2 Edition)"
 edition = "2024"
 rust-version = "1.90"
 
 [lib]
-name = "openmdr_lib"
+name = "openmd_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

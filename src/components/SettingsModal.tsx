@@ -359,7 +359,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <FileText size={32} color="#ffffff" />
               </div>
               <div>
-                <h2 style={{ fontSize: 20, fontWeight: 700, margin: '4px 0' }}>OpenMDR</h2>
+                <h2 style={{ fontSize: 20, fontWeight: 700, margin: '4px 0' }}>OpenMD</h2>
                 <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
                   {t('settings.aboutVersion')} 1.1.0
                 </div>
