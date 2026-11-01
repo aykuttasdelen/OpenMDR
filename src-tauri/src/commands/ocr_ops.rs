@@ -117,6 +117,7 @@ pub async fn process_pdf_ocr(
     mode: Option<String>,
     extract_images: Option<bool>,
     output_dir: Option<String>,
+    subfolder: Option<String>,
 ) -> Result<OCRResult, String> {
     let path = Path::new(&pdf_path);
     if !path.exists() {
@@ -155,6 +156,12 @@ pub async fn process_pdf_ocr(
     if !output_dir_arg.is_empty() {
         common_args.push("--output-dir".to_string());
         common_args.push(output_dir_arg);
+    }
+    if let Some(sub) = subfolder {
+        if !sub.trim().is_empty() {
+            common_args.push("--subfolder".to_string());
+            common_args.push(sub);
+        }
     }
 
     let mut cmd = match target {

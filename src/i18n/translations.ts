@@ -215,7 +215,7 @@ export const translations: Record<Language, Translations> = {
     'ocr.cancel': 'İptal',
     'ocr.dropPrompt': 'PDF dosyasını OCR ile açmak için buraya bırakın',
     'ocr.extractImages': 'Görselleri Dışa Aktar (assets/)',
-    'ocr.extractImagesDesc': 'PDF içindeki görselleri çıkartıp assets/ klasörüne kaydeder ve Markdown ile bağlar.'
+    'ocr.extractImagesDesc': 'PDF içindeki görselleri çıkartıp assets/{name}/ klasörüne kaydeder ve Markdown ile bağlar.'
   },
   en: {
     // App
@@ -427,7 +427,7 @@ export const translations: Record<Language, Translations> = {
     'ocr.cancel': 'Cancel',
     'ocr.dropPrompt': 'Drop PDF here to import with OCR',
     'ocr.extractImages': 'Extract Images (assets/)',
-    'ocr.extractImagesDesc': 'Extracts images from PDF into assets/ folder and references them in Markdown.'
+    'ocr.extractImagesDesc': 'Extracts images from PDF into assets/{name}/ subfolder and references them in Markdown.'
   }
 };
 

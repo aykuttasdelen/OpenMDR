@@ -16,6 +16,7 @@ interface PreviewProps {
   scrollRef?: React.RefObject<HTMLDivElement | null>;
   activeFilePath?: string;
   rootPath?: string;
+  baseDir?: string;
   onToggleTask?: (taskIndex: number, checked: boolean) => void;
 }
 
@@ -150,6 +151,7 @@ export const Preview: React.FC<PreviewProps> = React.memo(({
   scrollRef,
   activeFilePath,
   rootPath,
+  baseDir,
   onToggleTask 
 }) => {
   const isDark = theme === 'dark' || (theme === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -227,13 +229,28 @@ export const Preview: React.FC<PreviewProps> = React.memo(({
 
             // Responsive image renderer with local asset resolution
             img({ src, alt, ...props }: any) {
-              const baseDir = activeFilePath ? getDirname(activeFilePath) : rootPath;
-              const resolvedSrc = resolveRelativeImagePath(src || '', baseDir);
+              const effectiveBaseDir = activeFilePath ? getDirname(activeFilePath) : (baseDir || rootPath);
+              const resolvedSrc = resolveRelativeImagePath(src || '', effectiveBaseDir);
               return (
                 <img 
                   src={resolvedSrc} 
                   alt={alt || ''} 
                   loading="lazy"
+                  style={{
+                    maxWidth: '100%',
+                    height: 'auto',
+                    borderRadius: 'var(--radius-sm)',
+                    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08)',
+                    margin: '8px 0',
+                    display: 'block'
+                  }}
+                  onError={(e) => {
+                    const target = e.currentTarget;
+                    if (!target.dataset.hasFailed) {
+                      target.dataset.hasFailed = 'true';
+                      console.warn('Preview image load error for src:', resolvedSrc);
+                    }
+                  }}
                   {...props} 
                 />
               );

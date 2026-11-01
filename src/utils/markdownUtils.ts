@@ -153,12 +153,25 @@ export function getImageExtension(mimeType?: string): string {
 }
 
 /**
- * Resolves a markdown image src to an absolute file:// URL if relative and baseDir is provided.
- * Leaves http(s), data:, blob:, and file: URLs untouched.
+ * Resolves a markdown image src to an absolute asset:// or file:// URL if relative and baseDir is provided.
+ * Leaves http(s), data:, blob:, asset:, and file: URLs untouched.
  */
 export function resolveRelativeImagePath(src: string, baseDir?: string): string {
   if (!src) return '';
-  if (/^(https?:\/\/|data:|blob:|file:\/\/)/i.test(src)) {
+  if (/^(https?:\/\/|data:|blob:|asset:\/\/)/i.test(src)) {
+    return src;
+  }
+  let targetPath = src;
+  if (/^file:\/\//i.test(src)) {
+    // If running in Tauri webview, convert file:// to asset://
+    if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.convertFileSrc) {
+      try {
+        const rawPath = decodeURI(src.replace(/^file:\/\//i, ''));
+        return (window as any).__TAURI_INTERNALS__.convertFileSrc(rawPath, 'asset');
+      } catch {
+        return src;
+      }
+    }
     return src;
   }
   if (!baseDir) {
@@ -168,6 +181,16 @@ export function resolveRelativeImagePath(src: string, baseDir?: string): string 
   const cleanSrc = src.replace(/\\/g, '/').replace(/^(\.\/)+/, '').replace(/^\//, '');
   const combined = `${cleanBase}/${cleanSrc}`;
   const cleanPath = combined.startsWith('/') ? combined : `/${combined}`;
+
+  // When running inside Tauri desktop app, use convertFileSrc to generate a valid asset:// URL for WKWebView
+  if (typeof window !== 'undefined' && (window as any).__TAURI_INTERNALS__?.convertFileSrc) {
+    try {
+      return (window as any).__TAURI_INTERNALS__.convertFileSrc(cleanPath, 'asset');
+    } catch {
+      // Fallback to file://
+    }
+  }
+
   return `file://${encodeURI(cleanPath)}`;
 }
 

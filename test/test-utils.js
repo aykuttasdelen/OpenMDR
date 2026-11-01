@@ -210,6 +210,10 @@ assert.strictEqual(
   'file:///Users/test/already-file.png'
 );
 assert.strictEqual(
+  resolveRelativeImagePath('asset://localhost/Users/test/img.png', '/Users/test'),
+  'asset://localhost/Users/test/img.png'
+);
+assert.strictEqual(
   resolveRelativeImagePath('assets/paste-no-base.png', undefined),
   'assets/paste-no-base.png'
 );

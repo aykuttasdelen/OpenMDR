@@ -194,6 +194,7 @@ export const tauriAPI = {
       mode: options.mode || null,
       extractImages: options.extractImages ?? true,
       outputDir: options.outputDir || null,
+      subfolder: options.subfolder || null,
     });
   },
 

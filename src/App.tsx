@@ -1565,6 +1565,7 @@ export const App: React.FC = () => {
                   fontSize={fontSize}
                   activeFilePath={activeTab?.filePath}
                   rootPath={rootFolderPath}
+                  baseDir={baseDir}
                   onToggleTask={handleToggleTask}
                 />
               </div>

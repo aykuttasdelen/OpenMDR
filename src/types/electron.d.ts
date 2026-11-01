@@ -56,6 +56,7 @@ export interface OCROptions {
   mode?: 'hybrid' | 'ocr' | 'text';
   extractImages?: boolean;
   outputDir?: string;
+  subfolder?: string;
 }
 
 export interface ElectronAPI {

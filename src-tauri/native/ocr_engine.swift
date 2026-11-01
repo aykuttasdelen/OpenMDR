@@ -456,6 +456,7 @@ func extractImagesFromPage(
     pageNumber: Int,
     baseName: String,
     assetsDir: URL,
+    subfolderName: String,
     savedPaths: inout Set<String>
 ) -> [ExtractedAsset] {
     guard let cgPage = page.pageRef,
@@ -480,7 +481,8 @@ func extractImagesFromPage(
         }
         imageIndex += 1
         savedPaths.insert(candidateUrl.path)
-        return (candidateUrl, "assets/\(candidateName)")
+        let rel = subfolderName.isEmpty ? "assets/\(candidateName)" : "assets/\(subfolderName)/\(candidateName)"
+        return (candidateUrl, rel)
     }
     
     let discovered = scanPageRecursively(cgPage: cgPage)
@@ -863,6 +865,7 @@ func main() {
     var pageSelection: String = "all"
     var mode: String = "hybrid" // "hybrid", "ocr", "text"
     var extractImages: Bool = true
+    var customSubfolder: String?
     
     var i = 1
     while i < args.count {
@@ -896,6 +899,11 @@ func main() {
             if i + 1 < args.count {
                 let val = args[i + 1].lowercased()
                 extractImages = (val == "true" || val == "1" || val == "yes")
+                i += 1
+            }
+        case "--subfolder":
+            if i + 1 < args.count {
+                customSubfolder = args[i + 1]
                 i += 1
             }
         default:
@@ -935,16 +943,19 @@ func main() {
     }
     let assetsDirUrl = destinationDirUrl.appendingPathComponent("assets")
     
-    if extractImages {
-        try? FileManager.default.createDirectory(at: assetsDirUrl, withIntermediateDirectories: true)
-    }
-    
     let rawBaseName = fileUrl.deletingPathExtension().lastPathComponent
     let cleanedBaseName = rawBaseName
         .components(separatedBy: CharacterSet.alphanumerics.inverted)
         .filter { !$0.isEmpty }
         .joined(separator: "_")
     let baseDocName = cleanedBaseName.isEmpty ? "asset" : cleanedBaseName
+    
+    let subfolderName = customSubfolder ?? baseDocName
+    let docAssetsDirUrl = subfolderName.isEmpty ? assetsDirUrl : assetsDirUrl.appendingPathComponent(subfolderName)
+    
+    if extractImages {
+        try? FileManager.default.createDirectory(at: docAssetsDirUrl, withIntermediateDirectories: true)
+    }
     
     // Parse target pages (1-indexed for CLI, 0-indexed for PDFDocument)
     var targetIndices: [Int] = []
@@ -996,7 +1007,8 @@ func main() {
                 page: page,
                 pageNumber: pageNumber,
                 baseName: baseDocName,
-                assetsDir: assetsDirUrl,
+                assetsDir: docAssetsDirUrl,
+                subfolderName: subfolderName,
                 savedPaths: &allSavedAssetDiskPaths
             )
         }
