@@ -1,19 +1,24 @@
 import React, { useState, useEffect } from 'react';
-import { X, FileText, ScanText, Languages, Sparkles, Loader2, AlertCircle, FolderOpen } from 'lucide-react';
+import { X, FileText, ScanText, Languages, Sparkles, Loader2, AlertCircle, FolderOpen, Images } from 'lucide-react';
 import { useTranslation } from '../i18n/LanguageContext';
 import { OCRProgress } from '../types/electron';
+import { getDirname } from '../utils/markdownUtils';
 
 interface OCRModalProps {
   isOpen: boolean;
   onClose: () => void;
   initialPdfPath?: string | null;
-  onComplete: (markdown: string, originalFileName: string, destination: 'newTab' | 'append') => void;
+  defaultOutputDir?: string | null;
+  activeTabFilePath?: string | null;
+  onComplete: (markdown: string, originalFileName: string, destination: 'newTab' | 'append', destinationDir?: string) => void;
 }
 
 export const OCRModal: React.FC<OCRModalProps> = ({
   isOpen,
   onClose,
   initialPdfPath,
+  defaultOutputDir,
+  activeTabFilePath,
   onComplete
 }) => {
   const { t } = useTranslation();
@@ -23,6 +28,7 @@ export const OCRModal: React.FC<OCRModalProps> = ({
   const [language, setLanguage] = useState<string>('tr-TR,en-US');
   const [mode, setMode] = useState<'hybrid' | 'ocr' | 'text'>('hybrid');
   const [destination, setDestination] = useState<'newTab' | 'append'>('newTab');
+  const [extractImages, setExtractImages] = useState<boolean>(true);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [progress, setProgress] = useState<OCRProgress | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -33,6 +39,7 @@ export const OCRModal: React.FC<OCRModalProps> = ({
       setErrorMessage(null);
       setProgress(null);
       setIsProcessing(false);
+      setExtractImages(true);
     }
   }, [isOpen, initialPdfPath]);
 
@@ -83,6 +90,23 @@ export const OCRModal: React.FC<OCRModalProps> = ({
       setErrorMessage(null);
       setProgress({ type: 'progress', page: 0, totalPages: 1, percent: 5 });
 
+      let destinationDir = defaultOutputDir || undefined;
+      if (destination === 'append' && activeTabFilePath) {
+        destinationDir = getDirname(activeTabFilePath);
+      } else if (!destinationDir && window.electronAPI) {
+        try {
+          const docFn = window.electronAPI.getDefaultDocumentsDir || window.electronAPI.getDocumentsDir;
+          if (docFn) {
+            destinationDir = await docFn();
+          }
+        } catch (e) {
+          console.warn('Failed to resolve default documents dir for OCR assets:', e);
+        }
+      }
+      if (!destinationDir && pdfPath) {
+        destinationDir = getDirname(pdfPath);
+      }
+
       const pagesArg = pagesMode === 'all' ? 'all' : customPages.trim() || 'all';
 
       const result = await window.electronAPI.processPdfOCR({
@@ -90,10 +114,12 @@ export const OCRModal: React.FC<OCRModalProps> = ({
         pages: pagesArg,
         languages: language,
         mode,
+        extractImages,
+        outputDir: destinationDir,
       });
 
-      if (result.success && result.markdown) {
-        onComplete(result.markdown, getFileName(pdfPath), destination);
+      if (result.success && (result.markdown || (result.extractedImages && result.extractedImages.length > 0))) {
+        onComplete(result.markdown, getFileName(pdfPath), destination, destinationDir);
         onClose();
       } else {
         setErrorMessage(result.error || t('ocr.error', { error: 'Unknown OCR failure' }));
@@ -348,6 +374,48 @@ export const OCRModal: React.FC<OCRModalProps> = ({
                 </button>
               </div>
             </div>
+          </div>
+
+          {/* Extract Images Option */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '10px 14px',
+              background: 'var(--bg-input)',
+              border: '1px solid var(--border-default)',
+              borderRadius: 'var(--radius-md)',
+              cursor: isProcessing ? 'default' : 'pointer'
+            }}
+            onClick={() => !isProcessing && setExtractImages(!extractImages)}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{
+                width: 28,
+                height: 28,
+                borderRadius: 'var(--radius-sm)',
+                background: 'rgba(56, 189, 248, 0.12)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0
+              }}>
+                <Images size={16} color="var(--accent-primary)" />
+              </div>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600 }}>{t('ocr.extractImages')}</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{t('ocr.extractImagesDesc')}</div>
+              </div>
+            </div>
+            <input
+              type="checkbox"
+              checked={extractImages}
+              onChange={e => setExtractImages(e.target.checked)}
+              disabled={isProcessing}
+              style={{ cursor: 'pointer', width: 16, height: 16 }}
+              onClick={e => e.stopPropagation()}
+            />
           </div>
 
           {/* Progress Indicator */}

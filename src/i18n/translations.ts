@@ -213,7 +213,9 @@ export const translations: Record<Language, Translations> = {
     'ocr.success': 'PDF başarıyla metne dönüştürüldü ({count} sayfa).',
     'ocr.error': 'OCR hatası: {error}',
     'ocr.cancel': 'İptal',
-    'ocr.dropPrompt': 'PDF dosyasını OCR ile açmak için buraya bırakın'
+    'ocr.dropPrompt': 'PDF dosyasını OCR ile açmak için buraya bırakın',
+    'ocr.extractImages': 'Görselleri Dışa Aktar (assets/)',
+    'ocr.extractImagesDesc': 'PDF içindeki görselleri çıkartıp assets/ klasörüne kaydeder ve Markdown ile bağlar.'
   },
   en: {
     // App
@@ -423,7 +425,9 @@ export const translations: Record<Language, Translations> = {
     'ocr.success': 'PDF converted to text successfully ({count} pages).',
     'ocr.error': 'OCR error: {error}',
     'ocr.cancel': 'Cancel',
-    'ocr.dropPrompt': 'Drop PDF here to import with OCR'
+    'ocr.dropPrompt': 'Drop PDF here to import with OCR',
+    'ocr.extractImages': 'Extract Images (assets/)',
+    'ocr.extractImagesDesc': 'Extracts images from PDF into assets/ folder and references them in Markdown.'
   }
 };
 

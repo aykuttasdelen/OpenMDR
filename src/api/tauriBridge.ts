@@ -192,6 +192,8 @@ export const tauriAPI = {
       pages: options.pages || null,
       languages: options.languages || null,
       mode: options.mode || null,
+      extractImages: options.extractImages ?? true,
+      outputDir: options.outputDir || null,
     });
   },
 

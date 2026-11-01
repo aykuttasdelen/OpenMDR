@@ -22,6 +22,8 @@ pub struct OCRPage {
     #[serde(rename = "isOcr")]
     pub is_ocr: bool,
     pub text: String,
+    #[serde(default)]
+    pub images: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +35,8 @@ pub struct OCRResult {
     pub processed_pages: usize,
     pub markdown: String,
     pub pages: Vec<OCRPage>,
+    #[serde(default, rename = "extractedImages")]
+    pub extracted_images: Vec<String>,
     pub error: Option<String>,
 }
 
@@ -111,6 +115,8 @@ pub async fn process_pdf_ocr(
     pages: Option<String>,
     languages: Option<String>,
     mode: Option<String>,
+    extract_images: Option<bool>,
+    output_dir: Option<String>,
 ) -> Result<OCRResult, String> {
     let path = Path::new(&pdf_path);
     if !path.exists() {
@@ -122,35 +128,45 @@ pub async fn process_pdf_ocr(
     let page_arg = pages.unwrap_or_else(|| "all".to_string());
     let lang_arg = languages.unwrap_or_else(|| "tr-TR,en-US".to_string());
     let mode_arg = mode.unwrap_or_else(|| "hybrid".to_string());
+    let extract_images_arg = if extract_images.unwrap_or(true) {
+        "true".to_string()
+    } else {
+        "false".to_string()
+    };
+    let output_dir_arg = output_dir.unwrap_or_else(|| {
+        path.parent()
+            .and_then(|p| p.to_str())
+            .unwrap_or("")
+            .to_string()
+    });
+
+    let mut common_args = vec![
+        "--input".to_string(),
+        pdf_path.clone(),
+        "--pages".to_string(),
+        page_arg,
+        "--languages".to_string(),
+        lang_arg,
+        "--mode".to_string(),
+        mode_arg,
+        "--extract-images".to_string(),
+        extract_images_arg,
+    ];
+    if !output_dir_arg.is_empty() {
+        common_args.push("--output-dir".to_string());
+        common_args.push(output_dir_arg);
+    }
 
     let mut cmd = match target {
         OCRExecutionTarget::CompiledBinary(bin_path) => {
             let mut c = Command::new(bin_path);
-            c.args([
-                "--input",
-                &pdf_path,
-                "--pages",
-                &page_arg,
-                "--languages",
-                &lang_arg,
-                "--mode",
-                &mode_arg,
-            ]);
+            c.args(&common_args);
             c
         }
         OCRExecutionTarget::SwiftScript(script_path) => {
             let mut c = Command::new("swift");
             c.arg(script_path);
-            c.args([
-                "--input",
-                &pdf_path,
-                "--pages",
-                &page_arg,
-                "--languages",
-                &lang_arg,
-                "--mode",
-                &mode_arg,
-            ]);
+            c.args(&common_args);
             c
         }
     };

@@ -36,6 +36,7 @@ export interface OCRPage {
   pageNumber: number;
   isOcr: boolean;
   text: string;
+  images?: string[];
 }
 
 export interface OCRResult {
@@ -44,6 +45,7 @@ export interface OCRResult {
   processedPages: number;
   markdown: string;
   pages: OCRPage[];
+  extractedImages?: string[];
   error?: string;
 }
 
@@ -52,6 +54,8 @@ export interface OCROptions {
   pages?: string;
   languages?: string;
   mode?: 'hybrid' | 'ocr' | 'text';
+  extractImages?: boolean;
+  outputDir?: string;
 }
 
 export interface ElectronAPI {

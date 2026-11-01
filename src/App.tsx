@@ -473,7 +473,12 @@ export const App: React.FC = () => {
     setTimeout(() => editorRef.current?.focus(), 60);
   }, [tabs]);
 
-  const handleOCRComplete = useCallback(async (markdown: string, originalFileName: string, destination: 'newTab' | 'append') => {
+  const handleOCRComplete = useCallback(async (
+    markdown: string,
+    originalFileName: string,
+    destination: 'newTab' | 'append',
+    destinationDir?: string
+  ) => {
     if (destination === 'append' && activeTab) {
       const updated = activeTab.content ? `${activeTab.content}\n\n---\n\n${markdown}` : markdown;
       handleContentChange(updated, activeTab.id);
@@ -482,7 +487,7 @@ export const App: React.FC = () => {
       const desiredTitle = `${baseName} (OCR).md`;
 
       const newId = `tab-${Date.now()}`;
-      let targetDir = defaultSavePath;
+      let targetDir = destinationDir || defaultSavePath;
       if (!targetDir && window.electronAPI) {
         try {
           const docFn = window.electronAPI.getDefaultDocumentsDir || window.electronAPI.getDocumentsDir;
@@ -1601,6 +1606,8 @@ export const App: React.FC = () => {
         isOpen={ocrModalOpen}
         onClose={() => setOcrModalOpen(false)}
         initialPdfPath={ocrInitialPdfPath}
+        defaultOutputDir={rootFolderPath || defaultSavePath || (activeTab?.filePath ? getDirname(activeTab.filePath) : null)}
+        activeTabFilePath={activeTab?.filePath}
         onComplete={handleOCRComplete}
       />
 

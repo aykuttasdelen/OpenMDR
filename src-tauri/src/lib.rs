@@ -268,6 +268,7 @@ mod tests {
         assert_eq!(progress.total_pages, 5);
         assert_eq!(progress.percent, 40);
 
+        // Backward compatibility: payload without extractedImages or images
         let sample_result = r##"{"type":"result","success":true,"totalPages":1,"processedPages":1,"markdown":"# Baslik\n\nIcerik","pages":[{"pageNumber":1,"isOcr":true,"text":"# Baslik\n\nIcerik"}],"error":null}"##;
         let result: ocr_ops::OCRResult = serde_json::from_str(sample_result).unwrap();
         assert!(result.success);
@@ -275,6 +276,18 @@ mod tests {
         assert_eq!(result.pages.len(), 1);
         assert_eq!(result.pages[0].page_number, 1);
         assert!(result.pages[0].is_ocr);
+        assert!(result.pages[0].images.is_empty());
+        assert!(result.extracted_images.is_empty());
         assert_eq!(result.markdown, "# Baslik\n\nIcerik");
+
+        // Payload with extractedImages and page images
+        let sample_with_assets = r##"{"type":"result","success":true,"totalPages":2,"processedPages":2,"markdown":"# Page 1\n\n![Görsel](assets/img-p1-1.png)","pages":[{"pageNumber":1,"isOcr":false,"text":"# Page 1\n\n![Görsel](assets/img-p1-1.png)","images":["assets/img-p1-1.png"]},{"pageNumber":2,"isOcr":true,"text":"Page 2 text","images":[]}],"extractedImages":["assets/img-p1-1.png"],"error":null}"##;
+        let result_assets: ocr_ops::OCRResult = serde_json::from_str(sample_with_assets).unwrap();
+        assert!(result_assets.success);
+        assert_eq!(result_assets.total_pages, 2);
+        assert_eq!(result_assets.processed_pages, 2);
+        assert_eq!(result_assets.extracted_images, vec!["assets/img-p1-1.png"]);
+        assert_eq!(result_assets.pages[0].images, vec!["assets/img-p1-1.png"]);
+        assert!(result_assets.pages[1].images.is_empty());
     }
 }

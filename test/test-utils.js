@@ -2,6 +2,7 @@ import assert from 'node:assert';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { 
   extractOutline, 
   calculateStats, 
@@ -463,6 +464,138 @@ assert.strictEqual(getNextUntitledTitle(['İsimsiz.md', 'İsimsiz2.md'], 'İsims
 assert.strictEqual(getNextUntitledTitle(['/Users/aykut/Documents/İsimsiz.md', 'İsimsiz 2.md'], 'İsimsiz'), 'İsimsiz 3.md');
 assert.strictEqual(getNextUntitledTitle(['Untitled.md'], 'Untitled'), 'Untitled 2.md');
 console.log('✓ getNextUntitledTitle collision-free numbering test passed');
+
+// Test 17: OCR PDF Image Extraction & Assets Resolution Workflow
+async function testOCRImageExtractionWorkflow() {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openmd-ocr-test-'));
+  try {
+    const assetsDir = path.join(tmpDir, 'assets');
+    await fs.mkdir(assetsDir, { recursive: true });
+
+    // Simulate extracted assets written to disk
+    const asset1Name = 'document_ocr-p1-1.png';
+    const asset2Name = 'document_ocr-p2-1.jpg';
+    await fs.writeFile(path.join(assetsDir, asset1Name), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    await fs.writeFile(path.join(assetsDir, asset2Name), Buffer.from([0xff, 0xd8, 0xff, 0xe0]));
+
+    // Simulate OCR generated Markdown output
+    const ocrMarkdown = `# Rapor Başlığı
+
+Giriş paragrafı ve belge içeriği.
+
+![Görsel](assets/${asset1Name})
+
+İkinci sayfa içeriği ve ek grafik.
+
+![Görsel](assets/${asset2Name})
+`;
+
+    // 1. Verify Outline extraction works correctly with images present
+    const outline = extractOutline(ocrMarkdown);
+    assert.strictEqual(outline.length, 1);
+    assert.strictEqual(outline[0].text, 'Rapor Başlığı');
+
+    // 2. Verify Stats calculation handles image tags properly
+    const stats = calculateStats(ocrMarkdown);
+    assert.strictEqual(stats.lines, 10);
+    assert(stats.words > 10);
+
+    // 3. Verify Relative Image Path resolution relative to document destination dir
+    const docFilePath = path.join(tmpDir, 'document_ocr (OCR).md');
+    const docDir = path.dirname(docFilePath);
+
+    const resolvedSrc1 = resolveRelativeImagePath(`assets/${asset1Name}`, docDir);
+    const resolvedSrc2 = resolveRelativeImagePath(`assets/${asset2Name}`, docDir);
+
+    assert(resolvedSrc1.startsWith('file://'), 'Resolved path must use file:// protocol');
+    assert(resolvedSrc1.includes(asset1Name), 'Resolved path must contain asset name');
+    assert(resolvedSrc2.includes(asset2Name), 'Resolved path must contain asset name');
+
+    // 4. Verify i18n keys for OCR Image Extraction exist in both TR and EN
+    assert(getTranslation('tr', 'ocr.extractImages').length > 0);
+    assert(getTranslation('tr', 'ocr.extractImagesDesc').length > 0);
+    assert(getTranslation('en', 'ocr.extractImages').length > 0);
+    assert(getTranslation('en', 'ocr.extractImagesDesc').length > 0);
+
+    console.log('✓ OCR PDF Image Extraction & Assets Resolution test passed');
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+}
+
+await testOCRImageExtractionWorkflow();
+
+// Test 18: Native OCR Engine End-to-End Image Extraction Test (macOS)
+async function testNativeOCREngineE2E() {
+  if (process.platform !== 'darwin') return;
+  const ocrBin = path.resolve('src-tauri/native/ocr_engine');
+  try {
+    await fs.access(ocrBin);
+  } catch {
+    console.log('ℹ ocr_engine binary not present; skipping native E2E test');
+    return;
+  }
+
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openmd-native-ocr-'));
+  const pdfPath = path.join(tmpDir, 'sample_doc.pdf');
+  const outDir = path.join(tmpDir, 'output');
+
+  try {
+    // Generate sample PDF via swift
+    const genScript = `
+import Foundation
+import CoreGraphics
+var mediaBox = CGRect(x: 0, y: 0, width: 400, height: 400)
+let consumer = CGDataConsumer(url: URL(fileURLWithPath: "${pdfPath}") as CFURL)!
+let ctx = CGContext(consumer: consumer, mediaBox: &mediaBox, nil)!
+ctx.beginPDFPage(nil)
+let cs = CGColorSpaceCreateDeviceRGB()
+let imgCtx = CGContext(data: nil, width: 64, height: 64, bitsPerComponent: 8, bytesPerRow: 256, space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+imgCtx.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+imgCtx.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
+let img = imgCtx.makeImage()!
+ctx.draw(img, in: CGRect(x: 50, y: 50, width: 100, height: 100))
+ctx.endPDFPage()
+ctx.closePDF()
+`;
+    execFileSync('swift', ['-e', genScript], { encoding: 'utf8' });
+
+    // 1. Run with extractImages: true
+    const stdout = execFileSync(ocrBin, [
+      '--input', pdfPath,
+      '--output-dir', outDir,
+      '--extract-images', 'true'
+    ], { encoding: 'utf8' });
+
+    const lines = stdout.trim().split('\n');
+    const resultLine = lines.find(l => l.includes('"type":"result"'));
+    assert(resultLine, 'ocr_engine must output a result payload');
+    const parsed = JSON.parse(resultLine);
+    assert.strictEqual(parsed.success, true);
+    assert(parsed.extractedImages && parsed.extractedImages.length > 0, 'Extracted images must not be empty');
+    assert(parsed.markdown.includes('![Görsel](assets/'), 'Markdown must link extracted assets');
+
+    const assetOnDisk = path.join(outDir, parsed.extractedImages[0]);
+    const stat = await fs.stat(assetOnDisk);
+    assert(stat.size > 0, 'Extracted asset file must exist and be non-empty');
+
+    // 2. Run with extractImages: false
+    const stdoutNoImg = execFileSync(ocrBin, [
+      '--input', pdfPath,
+      '--output-dir', path.join(tmpDir, 'no_img_out'),
+      '--extract-images', 'false'
+    ], { encoding: 'utf8' });
+    const parsedNoImg = JSON.parse(stdoutNoImg.trim().split('\n').find(l => l.includes('"type":"result"')));
+    assert.strictEqual(parsedNoImg.success, true);
+    assert.strictEqual(parsedNoImg.extractedImages.length, 0);
+
+    console.log('✓ Native OCR Engine End-to-End Image Extraction test passed');
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+}
+
+await testNativeOCREngineE2E();
 
 console.log('\nAll automated tests passed successfully! 🎉');
 
