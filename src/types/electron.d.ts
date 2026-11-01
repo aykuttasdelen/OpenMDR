@@ -45,6 +45,7 @@ export interface ElectronAPI {
   getDocumentsDir?: () => Promise<string>;
   getDefaultDocumentsDir?: () => Promise<string>;
   toggleMaximize?: () => Promise<void>;
+  setWindowTheme?: (theme: ThemeMode) => Promise<void>;
   setLanguage: (lang: string) => Promise<boolean>;
   closeWindow: (force?: boolean) => Promise<void>;
   cancelClose: () => Promise<boolean>;

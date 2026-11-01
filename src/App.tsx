@@ -186,10 +186,13 @@ export const App: React.FC = () => {
     return getUnsavedTabs(tabs);
   }, [tabs]);
 
-  // Apply theme to document element
+  // Apply theme to document element and synchronize native window appearance
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem(STORAGE_KEYS.THEME, theme);
+    if (window.electronAPI?.setWindowTheme) {
+      window.electronAPI.setWindowTheme(theme);
+    }
   }, [theme]);
 
   // Session persistence synchronization

@@ -150,6 +150,14 @@ export const tauriAPI = {
     return invoke<void>('toggle_maximize');
   },
 
+  setWindowTheme: async (theme: 'light' | 'dark' | 'auto'): Promise<void> => {
+    try {
+      await invoke<void>('set_window_theme', { theme });
+    } catch (err) {
+      console.warn('Failed to set window theme:', err);
+    }
+  },
+
   setLanguage: async (lang: string): Promise<boolean> => {
     try {
       await invoke<void>('set_menu_language', { lang });

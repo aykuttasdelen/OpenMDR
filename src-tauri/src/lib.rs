@@ -56,6 +56,48 @@ async fn toggle_maximize(window: tauri::Window) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_window_theme(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    theme: String,
+) -> Result<(), String> {
+    let tauri_theme = match theme.as_str() {
+        "light" => Some(tauri::Theme::Light),
+        "dark" => Some(tauri::Theme::Dark),
+        _ => None,
+    };
+    let _ = app.set_theme(tauri_theme);
+    let _ = window.set_theme(tauri_theme);
+
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{
+            NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua,
+            NSAppearanceNameDarkAqua, NSWindow,
+        };
+        if let Ok(window_ptr) = window.ns_window() {
+            unsafe {
+                let ns_window = &*window_ptr.cast::<NSWindow>();
+                let appearance_name = match theme.as_str() {
+                    "light" => Some(NSAppearanceNameAqua),
+                    "dark" => Some(NSAppearanceNameDarkAqua),
+                    _ => None,
+                };
+                if let Some(name) = appearance_name {
+                    if let Some(appearance) = NSAppearance::appearanceNamed(name) {
+                        ns_window.setAppearance(Some(&appearance));
+                    }
+                } else {
+                    ns_window.setAppearance(None);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 fn cancel_close(state: State<AppState>) -> Result<(), String> {
     state.force_close.store(false, Ordering::SeqCst);
     Ok(())
@@ -109,6 +151,7 @@ pub fn run() {
             set_menu_language,
             get_default_documents_dir,
             toggle_maximize,
+            set_window_theme,
             close_window,
             cancel_close,
         ])

@@ -63,6 +63,9 @@ export const TitleBar: React.FC<TitleBarProps> = React.memo(({
 
   return (
     <header className="titlebar" data-tauri-drag-region onDoubleClick={handleDoubleClick}>
+      {/* Traffic light spacer for macOS (prevents drag region from interfering with native hover controls) */}
+      <div className="titlebar-traffic-lights-spacer" />
+
       {/* Left controls */}
       <div className="titlebar-left">
         <button 
