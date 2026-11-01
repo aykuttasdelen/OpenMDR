@@ -590,7 +590,10 @@ func extractImagesFromPage(
     
     // 1. Process images discovered via content stream (with rects)
     for item in discovered {
-        guard item.rect.width >= 4 && item.rect.height >= 4 else { continue }
+        guard item.rect.width >= 32 && item.rect.height >= 32 else { continue }
+        let area = item.rect.width * item.rect.height
+        let ratio = item.rect.width / max(1.0, item.rect.height)
+        guard area >= 1024 && ratio >= 0.08 && ratio <= 12.0 else { continue }
         markMaskStreams(of: item.stream)
         
         let normTop = max(0.0, min(1.0, 1.0 - (item.rect.origin.y + item.rect.size.height) / pageBounds.height))
@@ -724,11 +727,13 @@ func extractImagesFromPage(
 
 // MARK: - OCR & Text Extraction
 
-// Perform Vision OCR on CGImage and interleave extracted image assets
+// Perform Vision OCR on CGImage and format extracted image assets based on placement
 func performOCR(
     on image: CGImage,
     languages: [String],
-    extractedAssets: [ExtractedAsset] = []
+    extractedAssets: [ExtractedAsset] = [],
+    placement: String = "folderOnly",
+    pageNumber: Int = 1
 ) -> (markdown: String, rawText: String) {
     let request = VNRecognizeTextRequest()
     request.recognitionLevel = .accurate
@@ -750,22 +755,25 @@ func performOCR(
     }
     
     let handler = VNImageRequestHandler(cgImage: image, options: [:])
+    func fallbackImagesMarkdown() -> (String, String) {
+        if placement == "folderOnly" || extractedAssets.isEmpty {
+            return ("", "")
+        }
+        let imgs = extractedAssets.map { "![Görsel](\($0.relativePath))" }.joined(separator: "\n\n")
+        if placement == "pageEnd" {
+            return ("<details>\n<summary>🖼️ Sayfa \(pageNumber) Görselleri (\(extractedAssets.count))</summary>\n\n\(imgs)\n</details>", "")
+        }
+        return (imgs, "")
+    }
+
     do {
         try handler.perform([request])
     } catch {
-        if !extractedAssets.isEmpty {
-            let imgMd = extractedAssets.map { "![Görsel](\($0.relativePath))" }.joined(separator: "\n\n")
-            return (imgMd, "")
-        }
-        return ("", "")
+        return fallbackImagesMarkdown()
     }
     
     guard let observations = request.results, !observations.isEmpty else {
-        if !extractedAssets.isEmpty {
-            let imgMd = extractedAssets.map { "![Görsel](\($0.relativePath))" }.joined(separator: "\n\n")
-            return (imgMd, "")
-        }
-        return ("", "")
+        return fallbackImagesMarkdown()
     }
     
     // Extract recognized lines with normalized coordinates
@@ -795,11 +803,7 @@ func performOCR(
     }
     
     guard !lines.isEmpty else {
-        if !extractedAssets.isEmpty {
-            let imgMd = extractedAssets.map { "![Görsel](\($0.relativePath))" }.joined(separator: "\n\n")
-            return (imgMd, "")
-        }
-        return ("", "")
+        return fallbackImagesMarkdown()
     }
     
     // Sort lines top to bottom, grouping horizontally adjacent items
@@ -832,6 +836,7 @@ func performOCR(
     var remainingAssets = extractedAssets.sorted { $0.top < $1.top }
     
     func flushAssets(beforeTop targetTop: CGFloat) {
+        guard placement == "inline" else { return }
         while let nextAsset = remainingAssets.first, nextAsset.top <= targetTop {
             flushParagraph()
             mdBlocks.append("![Görsel](\(nextAsset.relativePath))")
@@ -894,10 +899,15 @@ func performOCR(
     
     flushParagraph()
     
-    // Remaining assets below text
-    while !remainingAssets.isEmpty {
-        let asset = remainingAssets.removeFirst()
-        mdBlocks.append("![Görsel](\(asset.relativePath))")
+    // Trailing asset placement
+    if placement == "inline" {
+        while !remainingAssets.isEmpty {
+            let asset = remainingAssets.removeFirst()
+            mdBlocks.append("![Görsel](\(asset.relativePath))")
+        }
+    } else if placement == "pageEnd" && !extractedAssets.isEmpty {
+        let imgs = extractedAssets.map { "![Görsel](\($0.relativePath))" }.joined(separator: "\n\n")
+        mdBlocks.append("<details>\n<summary>🖼️ Sayfa \(pageNumber) Görselleri (\(extractedAssets.count))</summary>\n\n\(imgs)\n</details>")
     }
     
     let markdown = mdBlocks.joined(separator: "\n\n")
@@ -905,10 +915,12 @@ func performOCR(
     return (markdown, rawText)
 }
 
-// Extract digital text directly from PDFPage if present and interleave extracted image assets
+// Extract digital text directly from PDFPage if present and format extracted image assets
 func extractDigitalText(
     from page: PDFPage,
-    extractedAssets: [ExtractedAsset] = []
+    extractedAssets: [ExtractedAsset] = [],
+    placement: String = "folderOnly",
+    pageNumber: Int = 1
 ) -> (markdown: String, rawText: String)? {
     guard let pageString = page.string?.trimmingCharacters(in: .whitespacesAndNewlines),
           pageString.count > 30 else {
@@ -935,8 +947,8 @@ func extractDigitalText(
         cleanedBlocks.append(currentGroup.joined(separator: " "))
     }
     
-    // Insert extracted assets into digital text according to their normalized vertical position
-    if !extractedAssets.isEmpty {
+    // Asset placement for digital text
+    if placement == "inline" && !extractedAssets.isEmpty {
         let sortedAssets = extractedAssets.sorted { $0.top < $1.top }
         let initialCount = cleanedBlocks.count
         var offset = 0
@@ -955,6 +967,9 @@ func extractDigitalText(
             cleanedBlocks.insert("![Görsel](\(asset.relativePath))", at: min(cleanedBlocks.count, targetIdx + offset))
             offset += 1
         }
+    } else if placement == "pageEnd" && !extractedAssets.isEmpty {
+        let imgs = extractedAssets.map { "![Görsel](\($0.relativePath))" }.joined(separator: "\n\n")
+        cleanedBlocks.append("<details>\n<summary>🖼️ Sayfa \(pageNumber) Görselleri (\(extractedAssets.count))</summary>\n\n\(imgs)\n</details>")
     }
     
     let markdown = cleanedBlocks.joined(separator: "\n\n")
@@ -971,6 +986,7 @@ func main() {
     var mode: String = "hybrid" // "hybrid", "ocr", "text"
     var extractImages: Bool = true
     var customSubfolder: String?
+    var imagePlacement: String = "folderOnly"
     
     var i = 1
     while i < args.count {
@@ -1009,6 +1025,11 @@ func main() {
         case "--subfolder":
             if i + 1 < args.count {
                 customSubfolder = args[i + 1]
+                i += 1
+            }
+        case "--placement":
+            if i + 1 < args.count {
+                imagePlacement = args[i + 1]
                 i += 1
             }
         default:
@@ -1122,31 +1143,31 @@ func main() {
         var isOcr = false
         
         if mode == "text" {
-            if let digital = extractDigitalText(from: page, extractedAssets: pageAssets) {
+            if let digital = extractDigitalText(from: page, extractedAssets: pageAssets, placement: imagePlacement, pageNumber: pageNumber) {
                 pageMarkdown = digital.markdown
-            } else if !pageAssets.isEmpty {
+            } else if !pageAssets.isEmpty && imagePlacement != "folderOnly" {
                 pageMarkdown = pageAssets.map { "![Görsel](\($0.relativePath))" }.joined(separator: "\n\n")
             }
         } else if mode == "ocr" {
             isOcr = true
             if let image = renderPageToCGImage(page: page) {
-                let (md, _) = performOCR(on: image, languages: languages, extractedAssets: pageAssets)
+                let (md, _) = performOCR(on: image, languages: languages, extractedAssets: pageAssets, placement: imagePlacement, pageNumber: pageNumber)
                 pageMarkdown = md
-            } else if !pageAssets.isEmpty {
+            } else if !pageAssets.isEmpty && imagePlacement != "folderOnly" {
                 pageMarkdown = pageAssets.map { "![Görsel](\($0.relativePath))" }.joined(separator: "\n\n")
             }
         } else {
             // Hybrid mode: check if page has digital text
-            if let digital = extractDigitalText(from: page, extractedAssets: pageAssets) {
+            if let digital = extractDigitalText(from: page, extractedAssets: pageAssets, placement: imagePlacement, pageNumber: pageNumber) {
                 pageMarkdown = digital.markdown
                 isOcr = false
             } else {
                 // Scanned or image page
                 isOcr = true
                 if let image = renderPageToCGImage(page: page) {
-                    let (md, _) = performOCR(on: image, languages: languages, extractedAssets: pageAssets)
+                    let (md, _) = performOCR(on: image, languages: languages, extractedAssets: pageAssets, placement: imagePlacement, pageNumber: pageNumber)
                     pageMarkdown = md
-                } else if !pageAssets.isEmpty {
+                } else if !pageAssets.isEmpty && imagePlacement != "folderOnly" {
                     pageMarkdown = pageAssets.map { "![Görsel](\($0.relativePath))" }.joined(separator: "\n\n")
                 }
             }
@@ -1164,7 +1185,11 @@ func main() {
         ))
     }
     
-    let combinedMarkdown = fullMarkdownParts.joined(separator: "\n\n---\n\n")
+    var combinedMarkdown = fullMarkdownParts.joined(separator: "\n\n---\n\n")
+    if imagePlacement == "docEnd" && !allExtractedAssetPaths.isEmpty {
+        let docImages = allExtractedAssetPaths.map { "![Görsel](\($0))" }.joined(separator: "\n\n")
+        combinedMarkdown += "\n\n---\n\n## Belge Görselleri\n\n" + docImages
+    }
     
     let finalResult = OCRFinalResult(
         type: "result",

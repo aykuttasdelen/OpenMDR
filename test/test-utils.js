@@ -520,11 +520,21 @@ Giriş paragrafı ve belge içeriği.
     assert(resolvedSrc1.includes(asset1Name), 'Resolved path must contain asset name');
     assert(resolvedSrc2.includes(asset2Name), 'Resolved path must contain asset name');
 
-    // 4. Verify i18n keys for OCR Image Extraction exist in both TR and EN
+    // 4. Verify i18n keys for OCR Image Extraction and Placement exist in both TR and EN
     assert(getTranslation('tr', 'ocr.extractImages').length > 0);
     assert(getTranslation('tr', 'ocr.extractImagesDesc').length > 0);
     assert(getTranslation('en', 'ocr.extractImages').length > 0);
     assert(getTranslation('en', 'ocr.extractImagesDesc').length > 0);
+    assert(getTranslation('tr', 'ocr.placement').length > 0);
+    assert(getTranslation('tr', 'ocr.placementFolderOnly').length > 0);
+    assert(getTranslation('tr', 'ocr.placementPageEnd').length > 0);
+    assert(getTranslation('tr', 'ocr.placementDocEnd').length > 0);
+    assert(getTranslation('tr', 'ocr.placementInline').length > 0);
+    assert(getTranslation('en', 'ocr.placement').length > 0);
+    assert(getTranslation('en', 'ocr.placementFolderOnly').length > 0);
+    assert(getTranslation('en', 'ocr.placementPageEnd').length > 0);
+    assert(getTranslation('en', 'ocr.placementDocEnd').length > 0);
+    assert(getTranslation('en', 'ocr.placementInline').length > 0);
 
     console.log('✓ OCR PDF Image Extraction & Assets Resolution test passed');
   } finally {
@@ -575,7 +585,7 @@ ctx.closePDF()
 `;
     execFileSync('swift', ['-e', genScript], { encoding: 'utf8' });
 
-    // 1. Run with extractImages: true on Turkish filename with spaces & parentheses
+    // 1. Run with extractImages: true (default placement: folderOnly - Option B)
     const stdout = execFileSync(cachedOcrBin, [
       '--input', pdfPath,
       '--output-dir', outDir,
@@ -593,16 +603,47 @@ ctx.closePDF()
       'assets/Turkce_Belge_Ornek/Turkce_Belge_Ornek-p1-1.png',
       'Extracted image path must be sanitized to clean ASCII subfolder and filename'
     );
+    // Option B: Folder only, does not pollute or break the markdown text flow
     assert(
-      parsed.markdown.includes('![Görsel](assets/Turkce_Belge_Ornek/Turkce_Belge_Ornek-p1-1.png)'),
-      'Markdown must link sanitized extracted asset'
+      !parsed.markdown.includes('![Görsel]('),
+      'In default folderOnly mode, markdown must remain clean without inline image links'
     );
 
     const assetOnDisk = path.join(outDir, parsed.extractedImages[0]);
     const stat = await fs.stat(assetOnDisk);
     assert(stat.size > 0, 'Extracted asset file must exist and be non-empty');
 
-    // 2. Run with extractImages: false
+    // 2. Run with --placement inline
+    const inlineOutDir = path.join(tmpDir, 'inline_output');
+    const stdoutInline = execFileSync(cachedOcrBin, [
+      '--input', pdfPath,
+      '--output-dir', inlineOutDir,
+      '--extract-images', 'true',
+      '--placement', 'inline'
+    ], { encoding: 'utf8' });
+    const parsedInline = JSON.parse(stdoutInline.trim().split('\n').find(l => l.includes('"type":"result"')));
+    assert.strictEqual(parsedInline.success, true);
+    assert(
+      parsedInline.markdown.includes('![Görsel](assets/Turkce_Belge_Ornek/Turkce_Belge_Ornek-p1-1.png)'),
+      'In inline mode, markdown must embed image links directly'
+    );
+
+    // 3. Run with --placement docEnd
+    const docEndOutDir = path.join(tmpDir, 'docend_output');
+    const stdoutDocEnd = execFileSync(cachedOcrBin, [
+      '--input', pdfPath,
+      '--output-dir', docEndOutDir,
+      '--extract-images', 'true',
+      '--placement', 'docEnd'
+    ], { encoding: 'utf8' });
+    const parsedDocEnd = JSON.parse(stdoutDocEnd.trim().split('\n').find(l => l.includes('"type":"result"')));
+    assert.strictEqual(parsedDocEnd.success, true);
+    assert(
+      parsedDocEnd.markdown.includes('## Belge Görselleri') && parsedDocEnd.markdown.includes('assets/Turkce_Belge_Ornek/Turkce_Belge_Ornek-p1-1.png'),
+      'In docEnd mode, markdown must collect images at document end'
+    );
+
+    // 4. Run with extractImages: false
     const stdoutNoImg = execFileSync(cachedOcrBin, [
       '--input', pdfPath,
       '--output-dir', path.join(tmpDir, 'no_img_out'),

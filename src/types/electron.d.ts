@@ -57,6 +57,7 @@ export interface OCROptions {
   extractImages?: boolean;
   outputDir?: string;
   subfolder?: string;
+  imagePlacement?: 'folderOnly' | 'pageEnd' | 'docEnd' | 'inline';
 }
 
 export interface ElectronAPI {

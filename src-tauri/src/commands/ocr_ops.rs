@@ -164,6 +164,7 @@ pub async fn process_pdf_ocr(
     extract_images: Option<bool>,
     output_dir: Option<String>,
     subfolder: Option<String>,
+    image_placement: Option<String>,
 ) -> Result<OCRResult, String> {
     let path = Path::new(&pdf_path);
     if !path.exists() {
@@ -215,6 +216,9 @@ pub async fn process_pdf_ocr(
             common_args.push(sub);
         }
     }
+    let placement_arg = image_placement.unwrap_or_else(|| "folderOnly".to_string());
+    common_args.push("--placement".to_string());
+    common_args.push(placement_arg);
 
     let mut cmd = match target {
         OCRExecutionTarget::CompiledBinary(bin_path) => {

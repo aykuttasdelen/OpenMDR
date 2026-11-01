@@ -161,8 +161,9 @@ const PreviewImage: React.FC<{
   alt?: string;
   effectiveBaseDir?: string;
   searchDirs?: string;
+  onImageClick?: (src: string, alt: string) => void;
   [key: string]: any;
-}> = ({ node: _node, src = '', alt = '', effectiveBaseDir, searchDirs, style, ...props }) => {
+}> = ({ node: _node, src = '', alt = '', effectiveBaseDir, searchDirs, onImageClick, style, ...props }) => {
   const isRemoteOrData = /^(https?:\/\/|data:|blob:)/i.test(src);
   const lookupDir = searchDirs || effectiveBaseDir;
   const cacheKey = `${lookupDir || ''}::${src}`;
@@ -234,18 +235,24 @@ const PreviewImage: React.FC<{
     <img
       src={currentSrc}
       alt={alt}
+      onClick={() => onImageClick?.(currentSrc, alt || '')}
       onError={() => {
         if (!currentSrc.startsWith('data:')) {
           setCurrentSrc(null);
         }
       }}
+      title="Büyütmek için tıklayın"
       style={{
         maxWidth: '100%',
+        maxHeight: '360px',
+        width: 'auto',
         height: 'auto',
+        objectFit: 'contain',
         borderRadius: 'var(--radius-sm)',
         boxShadow: '0 2px 8px rgba(0, 0, 0, 0.08)',
-        margin: '8px 0',
+        margin: '12px auto',
         display: 'block',
+        cursor: 'zoom-in',
         ...style
       }}
       {...props}
@@ -264,6 +271,7 @@ export const Preview: React.FC<PreviewProps> = React.memo(({
   onToggleTask 
 }) => {
   const isDark = theme === 'dark' || (theme === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  const [lightboxImg, setLightboxImg] = useState<{ src: string; alt: string } | null>(null);
   let taskCounter = 0;
 
   return (
@@ -348,6 +356,7 @@ export const Preview: React.FC<PreviewProps> = React.memo(({
                   alt={alt}
                   effectiveBaseDir={effectiveBaseDir}
                   searchDirs={searchDirs}
+                  onImageClick={(imgSrc, imgAlt) => setLightboxImg({ src: imgSrc, alt: imgAlt })}
                   {...props}
                 />
               );
@@ -434,6 +443,90 @@ export const Preview: React.FC<PreviewProps> = React.memo(({
           {content}
         </ReactMarkdown>
       </div>
+
+      {lightboxImg && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setLightboxImg(null)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 9999,
+            backgroundColor: 'rgba(0, 0, 0, 0.78)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '24px',
+            backdropFilter: 'blur(5px)',
+            cursor: 'zoom-out'
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              position: 'relative',
+              maxWidth: '90vw',
+              maxHeight: '90vh',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center'
+            }}
+          >
+            <img
+              src={lightboxImg.src}
+              alt={lightboxImg.alt}
+              style={{
+                maxWidth: '100%',
+                maxHeight: '82vh',
+                objectFit: 'contain',
+                borderRadius: '8px',
+                boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5)'
+              }}
+            />
+            {lightboxImg.alt && (
+              <span
+                style={{
+                  marginTop: '10px',
+                  color: '#f8fafc',
+                  fontSize: '13px',
+                  background: 'rgba(15, 23, 42, 0.75)',
+                  padding: '4px 12px',
+                  borderRadius: '12px',
+                  letterSpacing: '0.01em'
+                }}
+              >
+                {lightboxImg.alt}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => setLightboxImg(null)}
+              style={{
+                position: 'absolute',
+                top: -12,
+                right: -12,
+                background: '#334155',
+                color: '#ffffff',
+                border: '1px solid rgba(255, 255, 255, 0.2)',
+                borderRadius: '50%',
+                width: 28,
+                height: 28,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                fontSize: 16,
+                lineHeight: 1,
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.3)'
+              }}
+              title="Kapat"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 });

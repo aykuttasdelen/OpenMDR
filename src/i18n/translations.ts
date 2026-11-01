@@ -215,7 +215,12 @@ export const translations: Record<Language, Translations> = {
     'ocr.cancel': 'İptal',
     'ocr.dropPrompt': 'PDF dosyasını OCR ile açmak için buraya bırakın',
     'ocr.extractImages': 'Görselleri Dışa Aktar (assets/)',
-    'ocr.extractImagesDesc': 'PDF içindeki görselleri çıkartıp assets/{name}/ klasörüne kaydeder ve Markdown ile bağlar.'
+    'ocr.extractImagesDesc': 'PDF içindeki görselleri çıkartıp assets/{name}/ klasörüne kaydeder.',
+    'ocr.placement': 'Görsel Yerleşimi',
+    'ocr.placementFolderOnly': 'Sadece Klasöre Kaydet (Metne Ekleme - Önerilen)',
+    'ocr.placementPageEnd': 'Sayfa Sonuna Ekle',
+    'ocr.placementDocEnd': 'Belge Sonuna Ekle',
+    'ocr.placementInline': 'Metin Arasına Serpiştir'
   },
   en: {
     // App
@@ -427,7 +432,12 @@ export const translations: Record<Language, Translations> = {
     'ocr.cancel': 'Cancel',
     'ocr.dropPrompt': 'Drop PDF here to import with OCR',
     'ocr.extractImages': 'Extract Images (assets/)',
-    'ocr.extractImagesDesc': 'Extracts images from PDF into assets/{name}/ subfolder and references them in Markdown.'
+    'ocr.extractImagesDesc': 'Extracts images from PDF into assets/{name}/ subfolder.',
+    'ocr.placement': 'Image Placement',
+    'ocr.placementFolderOnly': 'Save to Folder Only (No Text Injection - Recommended)',
+    'ocr.placementPageEnd': 'At End of Page',
+    'ocr.placementDocEnd': 'At End of Document',
+    'ocr.placementInline': 'Interleave in Text'
   }
 };
 

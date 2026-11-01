@@ -29,6 +29,9 @@ export const OCRModal: React.FC<OCRModalProps> = ({
   const [mode, setMode] = useState<'hybrid' | 'ocr' | 'text'>('hybrid');
   const [destination, setDestination] = useState<'newTab' | 'append'>('newTab');
   const [extractImages, setExtractImages] = useState<boolean>(true);
+  const [imagePlacement, setImagePlacement] = useState<'folderOnly' | 'pageEnd' | 'docEnd' | 'inline'>(() => {
+    return (localStorage.getItem('openmd_ocr_image_placement') as any) || 'folderOnly';
+  });
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [progress, setProgress] = useState<OCRProgress | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -116,6 +119,7 @@ export const OCRModal: React.FC<OCRModalProps> = ({
         mode,
         extractImages,
         outputDir: destinationDir,
+        imagePlacement,
       });
 
       if (result.success && (result.markdown || (result.extractedImages && result.extractedImages.length > 0))) {
@@ -417,6 +421,31 @@ export const OCRModal: React.FC<OCRModalProps> = ({
               onClick={e => e.stopPropagation()}
             />
           </div>
+
+          {/* Image Placement Selection (Option B default: folderOnly) */}
+          {extractImages && (
+            <div style={{ marginTop: -4 }}>
+              <label style={{ display: 'block', fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+                {t('ocr.placement')}
+              </label>
+              <select
+                className="select-field"
+                value={imagePlacement}
+                onChange={e => {
+                  const val = e.target.value as any;
+                  setImagePlacement(val);
+                  localStorage.setItem('openmd_ocr_image_placement', val);
+                }}
+                disabled={isProcessing}
+                style={{ width: '100%', fontSize: 12, padding: '7px 10px' }}
+              >
+                <option value="folderOnly">{t('ocr.placementFolderOnly')}</option>
+                <option value="pageEnd">{t('ocr.placementPageEnd')}</option>
+                <option value="docEnd">{t('ocr.placementDocEnd')}</option>
+                <option value="inline">{t('ocr.placementInline')}</option>
+              </select>
+            </div>
+          )}
 
           {/* Progress Indicator */}
           {isProcessing && (
