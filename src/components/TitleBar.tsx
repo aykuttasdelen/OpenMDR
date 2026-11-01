@@ -63,39 +63,39 @@ export const TitleBar: React.FC<TitleBarProps> = React.memo(({
 
   return (
     <header className="titlebar" data-tauri-drag-region onDoubleClick={handleDoubleClick}>
-      {/* Traffic light spacer for macOS (prevents drag region from interfering with native hover controls) */}
-      <div className="titlebar-traffic-lights-spacer" />
-
-      {/* Left controls */}
-      <div className="titlebar-left">
-        <button 
-          className={`btn-icon ${sidebarOpen ? 'active' : ''}`}
-          onClick={onToggleSidebar}
-          title={t('titlebar.sidebarToggle')}
-        >
-          <SidebarIcon size={16} />
-        </button>
-        <button 
-          className="btn-icon" 
-          onClick={onNewFile}
-          title={t('titlebar.newDoc')}
-        >
-          <FilePlus size={16} />
-        </button>
-        <button 
-          className="btn-icon" 
-          onClick={onOpenFile}
-          title={t('titlebar.openDoc')}
-        >
-          <FolderOpen size={16} />
-        </button>
-        <button 
-          className="btn-icon" 
-          onClick={onSaveFile}
-          title={t('titlebar.saveDoc')}
-        >
-          <Save size={16} />
-        </button>
+      {/* Left section: traffic lights spacer + left toolbar buttons */}
+      <div className="titlebar-left-wrapper">
+        <div className="titlebar-traffic-lights-spacer" />
+        <div className="titlebar-left">
+          <button 
+            className={`btn-icon ${sidebarOpen ? 'active' : ''}`}
+            onClick={onToggleSidebar}
+            title={t('titlebar.sidebarToggle')}
+          >
+            <SidebarIcon size={16} />
+          </button>
+          <button 
+            className="btn-icon" 
+            onClick={onNewFile}
+            title={t('titlebar.newDoc')}
+          >
+            <FilePlus size={16} />
+          </button>
+          <button 
+            className="btn-icon" 
+            onClick={onOpenFile}
+            title={t('titlebar.openDoc')}
+          >
+            <FolderOpen size={16} />
+          </button>
+          <button 
+            className="btn-icon" 
+            onClick={onSaveFile}
+            title={t('titlebar.saveDoc')}
+          >
+            <Save size={16} />
+          </button>
+        </div>
       </div>
 
       {/* Center: App Title */}

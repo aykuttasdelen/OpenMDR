@@ -119,6 +119,14 @@ html, body, #root {
   user-select: none;
 }
 
+.titlebar-left-wrapper {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  position: relative;
+  z-index: 2;
+}
+
 .titlebar-traffic-lights-spacer {
   width: 80px;
   min-width: 80px;
@@ -128,7 +136,13 @@ html, body, #root {
   pointer-events: none;
 }
 
-.titlebar-left,
+.titlebar-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 4px;
+}
+
 .titlebar-right {
   display: flex;
   align-items: center;
