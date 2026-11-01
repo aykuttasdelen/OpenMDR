@@ -1,0 +1,182 @@
+pub mod commands;
+pub mod menu;
+pub mod models;
+
+use commands::{dialogs, export_ops, fs_ops, image_ops};
+use menu::{build_app_menu, handle_menu_event};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tauri::{Emitter, Manager, State, WindowEvent};
+
+pub struct AppState {
+    pub force_close: Arc<AtomicBool>,
+}
+
+#[tauri::command]
+fn set_menu_language(app: tauri::AppHandle, lang: String) -> Result<(), String> {
+    let is_en = lang == "en";
+    let menu = build_app_menu(&app, is_en).map_err(|e| e.to_string())?;
+    app.set_menu(menu).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn close_window(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    force: Option<bool>,
+) -> Result<(), String> {
+    if force.unwrap_or(false) {
+        state.force_close.store(true, Ordering::SeqCst);
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.close();
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_close(state: State<AppState>) -> Result<(), String> {
+    state.force_close.store(false, Ordering::SeqCst);
+    Ok(())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let force_close = Arc::new(AtomicBool::new(false));
+    let force_close_clone = Arc::clone(&force_close);
+
+    tauri::Builder::default()
+        .manage(AppState {
+            force_close: Arc::clone(&force_close),
+        })
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let handle = app.handle();
+            let menu = build_app_menu(handle, false)?;
+            app.set_menu(menu)?;
+
+            Ok(())
+        })
+        .on_menu_event(|app, event| {
+            handle_menu_event(app, event.id().as_ref());
+        })
+        .on_window_event(move |window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event
+                && !force_close_clone.load(Ordering::SeqCst)
+            {
+                api.prevent_close();
+                let _ = window.emit("app:window-closing", ());
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            fs_ops::read_file,
+            fs_ops::write_file,
+            fs_ops::scan_directory,
+            fs_ops::create_file,
+            fs_ops::create_directory,
+            fs_ops::rename_file,
+            fs_ops::delete_file,
+            fs_ops::get_available_path,
+            fs_ops::show_in_folder,
+            image_ops::save_image,
+            dialogs::open_file_dialog,
+            dialogs::save_file_dialog,
+            dialogs::open_directory_dialog,
+            export_ops::save_html,
+            set_menu_language,
+            close_window,
+            cancel_close,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn test_get_available_path() {
+        let dir = tempdir().unwrap();
+        let base = dir.path().to_str().unwrap().to_string();
+
+        let path1 = fs_ops::get_available_path(base.clone(), "Test.md".to_string())
+            .await
+            .unwrap();
+        assert!(path1.ends_with("Test.md"));
+
+        // Create the file so it collides
+        fs::write(&path1, "hello").unwrap();
+
+        let path2 = fs_ops::get_available_path(base.clone(), "Test.md".to_string())
+            .await
+            .unwrap();
+        assert!(path2.ends_with("Test 2.md"));
+
+        fs::write(&path2, "hello 2").unwrap();
+
+        let path3 = fs_ops::get_available_path(base, "Test.md".to_string())
+            .await
+            .unwrap();
+        assert!(path3.ends_with("Test 3.md"));
+    }
+
+    #[tokio::test]
+    async fn test_save_image() {
+        let dir = tempdir().unwrap();
+        let base = dir.path().to_str().unwrap().to_string();
+
+        // 1x1 transparent PNG in base64
+        let b64 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+        let res = image_ops::save_image(base.clone(), b64.to_string(), "image/png".to_string())
+            .await
+            .unwrap();
+
+        assert!(res.starts_with("assets/paste-"));
+        assert!(res.ends_with(".png"));
+
+        let file_path = dir.path().join(&res);
+        assert!(file_path.exists());
+        assert_eq!(fs::metadata(file_path).unwrap().len(), 70);
+    }
+
+    #[test]
+    fn test_scan_dir_markdown_filtering() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+
+        // Create test markdown and non-markdown files
+        fs::write(root.join("doc.md"), "# Title").unwrap();
+        fs::write(root.join("note.mdx"), "# MDX").unwrap();
+        fs::write(root.join("ignore.js"), "console.log()").unwrap();
+
+        // Subfolder with markdown
+        let sub_md = root.join("docs");
+        fs::create_dir(&sub_md).unwrap();
+        fs::write(sub_md.join("chapter.md"), "content").unwrap();
+
+        // Subfolder with only non-markdown (should be pruned when markdown_only is true)
+        let sub_img = root.join("images");
+        fs::create_dir(&sub_img).unwrap();
+        fs::write(sub_img.join("logo.png"), "fake png bytes").unwrap();
+
+        // Truly empty subfolder (should be kept)
+        let sub_empty = root.join("empty_folder");
+        fs::create_dir(&sub_empty).unwrap();
+
+        let items = fs_ops::scan_dir_recursive(root, 0, 4, true);
+
+        let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+        assert!(names.contains(&"docs"));
+        assert!(names.contains(&"empty_folder"));
+        assert!(!names.contains(&"images"), "images folder with no markdown must be pruned");
+        assert!(names.contains(&"doc.md"));
+        assert!(names.contains(&"note.mdx"));
+        assert!(!names.contains(&"ignore.js"));
+    }
+}
