@@ -2,7 +2,7 @@ pub mod commands;
 pub mod menu;
 pub mod models;
 
-use commands::{dialogs, export_ops, fs_ops, image_ops};
+use commands::{dialogs, export_ops, fs_ops, image_ops, ocr_ops};
 use menu::{build_app_menu, handle_menu_event};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -145,9 +145,11 @@ pub fn run() {
             fs_ops::show_in_folder,
             image_ops::save_image,
             dialogs::open_file_dialog,
+            dialogs::open_pdf_dialog,
             dialogs::save_file_dialog,
             dialogs::open_directory_dialog,
             export_ops::save_html,
+            ocr_ops::process_pdf_ocr,
             set_menu_language,
             get_default_documents_dir,
             toggle_maximize,
@@ -256,5 +258,23 @@ mod tests {
         assert!(names.contains(&"doc.md"));
         assert!(names.contains(&"note.mdx"));
         assert!(!names.contains(&"ignore.js"));
+    }
+
+    #[test]
+    fn test_ocr_payload_parsing() {
+        let sample_progress = r#"{"type":"progress","page":2,"totalPages":5,"percent":40}"#;
+        let progress: ocr_ops::OCRProgressPayload = serde_json::from_str(sample_progress).unwrap();
+        assert_eq!(progress.page, 2);
+        assert_eq!(progress.total_pages, 5);
+        assert_eq!(progress.percent, 40);
+
+        let sample_result = r##"{"type":"result","success":true,"totalPages":1,"processedPages":1,"markdown":"# Baslik\n\nIcerik","pages":[{"pageNumber":1,"isOcr":true,"text":"# Baslik\n\nIcerik"}],"error":null}"##;
+        let result: ocr_ops::OCRResult = serde_json::from_str(sample_result).unwrap();
+        assert!(result.success);
+        assert_eq!(result.total_pages, 1);
+        assert_eq!(result.pages.len(), 1);
+        assert_eq!(result.pages[0].page_number, 1);
+        assert!(result.pages[0].is_ocr);
+        assert_eq!(result.markdown, "# Baslik\n\nIcerik");
     }
 }

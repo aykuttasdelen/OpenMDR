@@ -34,6 +34,8 @@ pub fn build_app_menu(app: &AppHandle, is_english: bool) -> Result<Menu<Wry>, ta
             &MenuItem::with_id(app, "save-file", if is_english { "Save" } else { "Kaydet" }, true, Some("CmdOrCtrl+S"))?,
             &MenuItem::with_id(app, "save-file-as", if is_english { "Save As..." } else { "Farklı Kaydet..." }, true, Some("CmdOrCtrl+Shift+S"))?,
             &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "ocr-pdf", if is_english { "Import PDF with OCR..." } else { "PDF'ten Metin Aktar (OCR)..." }, true, None::<&str>)?,
+            &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, "export-html", if is_english { "Export as HTML..." } else { "HTML Olarak Dışa Aktar..." }, true, None::<&str>)?,
             &MenuItem::with_id(app, "export-pdf", if is_english { "Export as PDF..." } else { "PDF Olarak Dışa Aktar..." }, true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,

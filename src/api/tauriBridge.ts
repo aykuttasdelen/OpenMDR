@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { FileItem } from '../types/electron';
+import { FileItem, OCRProgress, OCRResult, OCROptions } from '../types/electron';
 
 export interface OpenFileResult {
   filePath: string;
@@ -28,6 +28,10 @@ export const tauriAPI = {
 
   openFileDialog: async (): Promise<OpenFileResult | null> => {
     return invoke<OpenFileResult | null>('open_file_dialog');
+  },
+
+  openPdfDialog: async (): Promise<string | null> => {
+    return invoke<string | null>('open_pdf_dialog');
   },
 
   saveFileDialog: async (
@@ -180,6 +184,30 @@ export const tauriAPI = {
 
   cancelClose: async (): Promise<void> => {
     return invoke<void>('cancel_close');
+  },
+
+  processPdfOCR: async (options: OCROptions): Promise<OCRResult> => {
+    return invoke<OCRResult>('process_pdf_ocr', {
+      pdfPath: options.pdfPath,
+      pages: options.pages || null,
+      languages: options.languages || null,
+      mode: options.mode || null,
+    });
+  },
+
+  onOCRProgress: (callback: (progress: OCRProgress) => void): (() => void) => {
+    let unlistenFn: (() => void) | null = null;
+    listen<OCRProgress>('ocr:progress', (event) => {
+      callback(event.payload);
+    }).then((fn) => {
+      unlistenFn = fn;
+    });
+
+    return () => {
+      if (unlistenFn) {
+        unlistenFn();
+      }
+    };
   },
 
   onMenuCommand: (callback: (command: string) => void): (() => void) => {

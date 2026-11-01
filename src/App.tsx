@@ -8,6 +8,7 @@ import { Preview } from './components/Preview';
 import { StatusBar } from './components/StatusBar';
 import { CommandPalette, CommandItem } from './components/CommandPalette';
 import { ExportModal } from './components/ExportModal';
+import { OCRModal } from './components/OCRModal';
 import { SettingsModal } from './components/SettingsModal';
 import { UnsavedChangesModal } from './components/UnsavedChangesModal';
 import { Tab, FileItem, ViewMode, ThemeMode } from './types/electron';
@@ -44,7 +45,8 @@ import {
   Settings as SettingsIcon,
   FolderCheck,
   X,
-  XCircle
+  XCircle,
+  ScanText
 } from 'lucide-react';
 
 const STORAGE_KEYS = {
@@ -107,6 +109,8 @@ export const App: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [ocrModalOpen, setOcrModalOpen] = useState(false);
+  const [ocrInitialPdfPath, setOcrInitialPdfPath] = useState<string | null>(null);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [unsavedModalOpen, setUnsavedModalOpen] = useState(false);
   const [pendingCloseAction, setPendingCloseAction] = useState<'window' | 'workspace' | null>(null);
@@ -468,6 +472,70 @@ export const App: React.FC = () => {
     setActiveTabId(newTab.id);
     setTimeout(() => editorRef.current?.focus(), 60);
   }, [tabs]);
+
+  const handleOCRComplete = useCallback(async (markdown: string, originalFileName: string, destination: 'newTab' | 'append') => {
+    if (destination === 'append' && activeTab) {
+      const updated = activeTab.content ? `${activeTab.content}\n\n---\n\n${markdown}` : markdown;
+      handleContentChange(updated, activeTab.id);
+    } else {
+      const baseName = originalFileName.replace(/\.pdf$/i, '').trim() || 'Belge';
+      const desiredTitle = `${baseName} (OCR).md`;
+
+      const newId = `tab-${Date.now()}`;
+      let targetDir = defaultSavePath;
+      if (!targetDir && window.electronAPI) {
+        try {
+          const docFn = window.electronAPI.getDefaultDocumentsDir || window.electronAPI.getDocumentsDir;
+          if (docFn) {
+            targetDir = await docFn();
+            if (targetDir) {
+              setDefaultSavePath(targetDir);
+              localStorage.setItem(STORAGE_KEYS.DEFAULT_SAVE_PATH, targetDir);
+            }
+          }
+        } catch (err) {
+          console.warn('Failed to resolve target directory for OCR tab:', err);
+        }
+      }
+
+      let finalTitle = desiredTitle;
+      let finalFilePath: string | undefined = undefined;
+
+      if (targetDir && window.electronAPI?.getAvailablePath) {
+        try {
+          finalFilePath = await window.electronAPI.getAvailablePath(targetDir, desiredTitle);
+          finalTitle = getBasename(finalFilePath);
+        } catch (e) {
+          console.warn('Failed to resolve available path for OCR document:', e);
+        }
+      }
+
+      if (finalFilePath && window.electronAPI?.writeFile) {
+        try {
+          await window.electronAPI.writeFile(finalFilePath, markdown);
+        } catch (e) {
+          console.error('Failed to save OCR file to disk:', e);
+        }
+      }
+
+      const newTab: Tab = {
+        id: newId,
+        title: finalTitle,
+        filePath: finalFilePath,
+        content: markdown,
+        savedContent: finalFilePath ? markdown : '',
+        isModified: !finalFilePath
+      };
+
+      setTabs(prev => [...prev, newTab]);
+      setActiveTabId(newId);
+      setTimeout(() => editorRef.current?.focus(), 60);
+
+      if (rootFolderPath && finalFilePath?.startsWith(rootFolderPath)) {
+        handleRefreshTree();
+      }
+    }
+  }, [activeTab, defaultSavePath, rootFolderPath, handleContentChange, handleRefreshTree]);
 
   const handleOpenFolder = useCallback(async () => {
     if (window.electronAPI) {
@@ -989,6 +1057,10 @@ export const App: React.FC = () => {
         case 'open-settings': setSettingsModalOpen(true); break;
         case 'export-html': setExportModalOpen(true); break;
         case 'export-pdf': setExportModalOpen(true); break;
+        case 'ocr-pdf':
+          setOcrInitialPdfPath(null);
+          setOcrModalOpen(true);
+          break;
         case 'find': editorRef.current?.openFind(); break;
         case 'format-bold': handleInsertFormat('**', '**', 'bold text'); break;
         case 'format-italic': handleInsertFormat('*', '*', 'italic text'); break;
@@ -1040,6 +1112,12 @@ export const App: React.FC = () => {
           } catch {
             // Not a directory
           }
+        }
+
+        if (file.name.toLowerCase().endsWith('.pdf')) {
+          setOcrInitialPdfPath(filePath || null);
+          setOcrModalOpen(true);
+          continue;
         }
 
         if (isMarkdownFileName(file.name)) {
@@ -1216,6 +1294,15 @@ export const App: React.FC = () => {
       action: () => setExportModalOpen(true)
     },
     {
+      id: 'cmd-ocr-pdf',
+      title: t('command.ocr'),
+      icon: <ScanText size={16} />,
+      action: () => {
+        setOcrInitialPdfPath(null);
+        setOcrModalOpen(true);
+      }
+    },
+    {
       id: 'cmd-copy-md',
       title: t('command.copyMarkdown'),
       icon: <Copy size={16} />,
@@ -1313,6 +1400,10 @@ export const App: React.FC = () => {
         onOpenFile={handleOpenFile}
         onSaveFile={() => handleSaveFile(false)}
         onOpenExport={() => setExportModalOpen(true)}
+        onOpenOCR={() => {
+          setOcrInitialPdfPath(null);
+          setOcrModalOpen(true);
+        }}
         onOpenCommandPalette={() => setCommandPaletteOpen(true)}
         onOpenSettings={() => setSettingsModalOpen(true)}
       />
@@ -1337,6 +1428,10 @@ export const App: React.FC = () => {
             onRenameFile={handleRenameFile}
             onDeleteFile={handleDeleteFileFromTree}
             onShowInFinder={handleShowInFinder}
+            onOpenOCRForFile={(filePath) => {
+              setOcrInitialPdfPath(filePath);
+              setOcrModalOpen(true);
+            }}
             onRefreshTree={handleRefreshTree}
             onSelectHeading={handleSelectHeading}
           />
@@ -1499,6 +1594,14 @@ export const App: React.FC = () => {
         documentTitle={activeTab?.title || 'Document'}
         markdownContent={activeTab ? activeTab.content : ''}
         defaultDir={activeTab?.filePath ? getDirname(activeTab.filePath) : defaultSavePath}
+      />
+
+      {/* OCR Modal */}
+      <OCRModal
+        isOpen={ocrModalOpen}
+        onClose={() => setOcrModalOpen(false)}
+        initialPdfPath={ocrInitialPdfPath}
+        onComplete={handleOCRComplete}
       />
 
       {/* Settings Modal (Task 4) */}

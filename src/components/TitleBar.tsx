@@ -11,7 +11,8 @@ import {
   FilePlus, 
   Share2, 
   Command,
-  Settings as SettingsIcon
+  Settings as SettingsIcon,
+  ScanText
 } from 'lucide-react';
 import { ViewMode, ThemeMode } from '../types/electron';
 import { useTranslation } from '../i18n/LanguageContext';
@@ -29,6 +30,7 @@ interface TitleBarProps {
   onOpenFile: () => void;
   onSaveFile: () => void;
   onOpenExport: () => void;
+  onOpenOCR?: () => void;
   onOpenCommandPalette: () => void;
   onOpenSettings: () => void;
 }
@@ -46,6 +48,7 @@ export const TitleBar: React.FC<TitleBarProps> = React.memo(({
   onOpenFile,
   onSaveFile,
   onOpenExport,
+  onOpenOCR,
   onOpenCommandPalette,
   onOpenSettings
 }) => {
@@ -152,6 +155,17 @@ export const TitleBar: React.FC<TitleBarProps> = React.memo(({
         >
           <Share2 size={16} />
         </button>
+
+        {/* OCR PDF */}
+        {onOpenOCR && (
+          <button 
+            className="btn-icon"
+            onClick={onOpenOCR}
+            title={t('titlebar.ocr')}
+          >
+            <ScanText size={16} />
+          </button>
+        )}
 
         {/* Settings button */}
         <button 

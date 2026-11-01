@@ -103,6 +103,13 @@ OpenMD adopts a **Web-Native Hybrid Architecture**:
 * **Standalone HTML:** Exports self-contained HTML with embedded styles and highlighted syntax.
 * **Native PDF:** Generates print-ready PDFs using macOS's built-in WebKit printing subsystem.
 
+### 🔍 Native Apple Vision PDF OCR & Text Extraction (0 MB Bloat)
+* **Apple Silicon & Neural Engine Acceleration:** Utilizes macOS built-in `Apple Vision` (`VNRecognizeTextRequest`) and `PDFKit` frameworks with 0 MB extra bundle bloat.
+* **Hybrid Processing:** Instantly extracts selectable digital text without latency; automatically activates 200–300 DPI Neural Engine OCR for scanned pages and bitmap images.
+* **Smart Markdown Formatting:** Intelligently analyzes typography bounding boxes and layout geometry to infer `# Heading 1`, `## Heading 2`, lists (`- `, `1. `), and structured paragraphs.
+* **33 Supported Languages:** High-accuracy recognition for Turkish (`tr-TR`), English (`en-US`), German (`de-DE`), French (`fr-FR`), and more.
+* **Drag-and-Drop & File Explorer Integration:** Drop any `.pdf` directly into OpenMD, select custom page ranges (e.g. `1-5, 8`), choose destination (new tab or append), and monitor progress via a live status bar.
+
 ---
 
 ## ⌨️ macOS Keyboard Shortcuts

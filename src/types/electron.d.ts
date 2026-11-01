@@ -25,11 +25,41 @@ export interface OutlineItem {
 export type ViewMode = 'editor' | 'split' | 'preview';
 export type ThemeMode = 'dark' | 'light' | 'auto';
 
+export interface OCRProgress {
+  type: string;
+  page: number;
+  totalPages: number;
+  percent: number;
+}
+
+export interface OCRPage {
+  pageNumber: number;
+  isOcr: boolean;
+  text: string;
+}
+
+export interface OCRResult {
+  success: boolean;
+  totalPages: number;
+  processedPages: number;
+  markdown: string;
+  pages: OCRPage[];
+  error?: string;
+}
+
+export interface OCROptions {
+  pdfPath: string;
+  pages?: string;
+  languages?: string;
+  mode?: 'hybrid' | 'ocr' | 'text';
+}
+
 export interface ElectronAPI {
   readFile: (filePath: string) => Promise<string>;
   writeFile: (filePath: string, content: string) => Promise<boolean>;
   saveImage: (baseDir: string, base64Data: string, mimeType: string) => Promise<string>;
   openFileDialog: () => Promise<{ filePath: string; content: string; name: string } | null>;
+  openPdfDialog?: () => Promise<string | null>;
   saveFileDialog: (defaultName?: string, content?: string, defaultDir?: string) => Promise<string | null>;
   openDirectoryDialog: (markdownOnly?: boolean) => Promise<{ dirPath: string; tree: FileItem[] } | null>;
   readDirectory: (dirPath: string, markdownOnly?: boolean) => Promise<FileItem[]>;
@@ -49,6 +79,8 @@ export interface ElectronAPI {
   setLanguage: (lang: string) => Promise<boolean>;
   closeWindow: (force?: boolean) => Promise<void>;
   cancelClose: () => Promise<boolean>;
+  processPdfOCR?: (options: OCROptions) => Promise<OCRResult>;
+  onOCRProgress?: (callback: (progress: OCRProgress) => void) => () => void;
   onMenuCommand: (callback: (command: string) => void) => () => void;
   onWindowClosing: (callback: () => void) => () => void;
 }

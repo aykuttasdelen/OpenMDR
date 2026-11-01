@@ -18,7 +18,8 @@ import {
   Check, 
   X,
   XCircle,
-  FileCheck2
+  FileCheck2,
+  ScanText
 } from 'lucide-react';
 import { FileItem, OutlineItem } from '../types/electron';
 import { getBasename, getDirname, isMarkdownFileName } from '../utils/markdownUtils';
@@ -40,6 +41,7 @@ interface SidebarProps {
   onRenameFile: (oldPath: string, newPath: string) => Promise<void>;
   onDeleteFile: (path: string) => void;
   onShowInFinder?: (path: string) => void;
+  onOpenOCRForFile?: (filePath: string) => void;
   onRefreshTree: () => void;
   onSelectHeading: (line: number) => void;
 }
@@ -65,6 +67,7 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   onRenameFile,
   onDeleteFile,
   onShowInFinder,
+  onOpenOCRForFile,
   onRefreshTree,
   onSelectHeading
 }) => {
@@ -376,6 +379,16 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
 
             {/* File action buttons */}
             <div style={{ display: 'flex', gap: 2 }} onClick={e => e.stopPropagation()}>
+              {item.name.toLowerCase().endsWith('.pdf') && onOpenOCRForFile && (
+                <button
+                  className="btn-icon"
+                  style={{ width: 18, height: 18, opacity: 0.8, color: '#38bdf8' }}
+                  title={t('sidebar.ocrPdf')}
+                  onClick={() => onOpenOCRForFile(item.path)}
+                >
+                  <ScanText size={11} />
+                </button>
+              )}
               <button 
                 className="btn-icon"
                 style={{ width: 18, height: 18, opacity: 0.6 }}

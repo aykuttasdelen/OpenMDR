@@ -32,6 +32,20 @@ pub async fn open_file_dialog() -> Result<Option<OpenFileResult>, String> {
 }
 
 #[tauri::command]
+pub async fn open_pdf_dialog() -> Result<Option<String>, String> {
+    let dialog = rfd::AsyncFileDialog::new()
+        .set_title("PDF Dosyası Seç")
+        .add_filter("PDF Belgeleri", &["pdf"])
+        .add_filter("Tüm Dosyalar", &["*"]);
+
+    let handle = dialog.pick_file().await;
+    match handle {
+        Some(file) => Ok(Some(file.path().to_string_lossy().to_string())),
+        None => Ok(None),
+    }
+}
+
+#[tauri::command]
 pub async fn save_file_dialog(
     default_name: Option<String>,
     default_dir: Option<String>,
