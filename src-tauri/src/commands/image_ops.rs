@@ -1,6 +1,7 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::AsyncWriteExt;
 
 #[tauri::command]
 pub async fn save_image(
@@ -35,14 +36,6 @@ pub async fn save_image(
         .unwrap_or_default()
         .as_millis();
 
-    let mut file_name = format!("paste-{}.{}", timestamp, ext);
-    let mut file_path = assets_dir.join(&file_name);
-
-    if file_path.exists() {
-        file_name = format!("paste-{}-1.{}", timestamp, ext);
-        file_path = assets_dir.join(&file_name);
-    }
-
     let clean_base64 = if let Some(idx) = base64_data.find(";base64,") {
         &base64_data[idx + 8..]
     } else {
@@ -57,17 +50,69 @@ pub async fn save_image(
         return Err("Geçersiz görsel verisi.".to_string());
     }
 
-    tokio::fs::write(&file_path, bytes)
-        .await
-        .map_err(|e| format!("Görsel kaydedilemedi: {}", e))?;
+    if bytes.len() > 25 * 1024 * 1024 {
+        return Err("Görsel boyutu çok büyük (maksimum 25 MB).".to_string());
+    }
 
-    Ok(format!("assets/{}", file_name))
+    if ext == "svg" {
+        let svg_text = String::from_utf8_lossy(&bytes).to_lowercase();
+        if svg_text.contains("<script")
+            || svg_text.contains("javascript:")
+            || svg_text.contains("onload=")
+            || svg_text.contains("onerror=")
+        {
+            return Err("Güvenlik nedeniyle betik içeren SVG dosyaları kaydedilemez.".to_string());
+        }
+    }
+
+    for i in 0..=100 {
+        let file_name = if i == 0 {
+            format!("paste-{}.{}", timestamp, ext)
+        } else {
+            format!("paste-{}-{}.{}", timestamp, i, ext)
+        };
+        let file_path = assets_dir.join(&file_name);
+
+        match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&file_path)
+            .await
+        {
+            Ok(mut file) => {
+                file.write_all(&bytes)
+                    .await
+                    .map_err(|e| format!("Görsel kaydedilemedi: {}", e))?;
+                file.flush()
+                    .await
+                    .map_err(|e| format!("Görsel yazılamadı: {}", e))?;
+                return Ok(format!("assets/{}", file_name));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("Görsel kaydedilemedi: {}", e)),
+        }
+    }
+
+    Err("Görsel kaydedilemedi: uygun dosya adı bulunamadı.".to_string())
 }
 
 use std::sync::{Mutex, OnceLock};
 use tauri::Manager;
 
 static REGISTERED_ASSET_DIRS: OnceLock<Mutex<Vec<PathBuf>>> = OnceLock::new();
+
+pub fn allow_asset_dir(app: &tauri::AppHandle, path: &Path) {
+    let dir_to_allow = if path.is_file() {
+        path.parent().map(|p| p.to_path_buf())
+    } else {
+        Some(path.to_path_buf())
+    };
+    if let Some(dir) = dir_to_allow
+        && !dir.as_os_str().is_empty()
+    {
+        let _ = app.asset_protocol_scope().allow_directory(dir, true);
+    }
+}
 
 pub fn register_asset_search_dir(dir: &Path) {
     let dir_to_add = if dir.is_file() {
@@ -83,11 +128,12 @@ pub fn register_asset_search_dir(dir: &Path) {
     }
     let mutex = REGISTERED_ASSET_DIRS.get_or_init(|| Mutex::new(Vec::new()));
     if let Ok(mut list) = mutex.lock() {
-        if !list.contains(&clean_dir) {
-            list.insert(0, clean_dir);
-            if list.len() > 32 {
-                list.pop();
-            }
+        if let Some(pos) = list.iter().position(|p| p == &clean_dir) {
+            list.remove(pos);
+        }
+        list.insert(0, clean_dir);
+        if list.len() > 32 {
+            list.pop();
         }
     }
 }
@@ -312,111 +358,129 @@ pub async fn resolve_and_read_image_base64(
         clean_str = format!("/{}", clean_str);
     }
 
-    let mut resolved_path: Option<PathBuf> = None;
-
-    // 1. Check if clean_str is already an existing absolute path
-    let initial_path = PathBuf::from(&clean_str);
-    if initial_path.is_absolute() && initial_path.is_file() {
-        resolved_path = Some(initial_path);
+    if clean_str.contains('\0')
+        || (!Path::new(&clean_str).is_absolute()
+            && Path::new(&clean_str)
+                .components()
+                .any(|c| matches!(c, Component::ParentDir)))
+    {
+        return Err("Geçersiz görsel yolu.".to_string());
     }
 
-    // 2. Search across candidate base directories
-    if resolved_path.is_none() {
-        let rel_clean = clean_str
-            .trim_start_matches("./")
-            .trim_start_matches('/');
-        let file_name = Path::new(rel_clean)
-            .file_name()
-            .and_then(|s| s.to_str());
-        let target_ascii_key = file_name.map(fold_to_ascii_key);
+    let clean_str_for_task = clean_str.clone();
+    let base_dir_for_task = base_dir.clone();
 
-        let mut candidate_dirs: Vec<PathBuf> = Vec::new();
-        let mut push_dir = |p: PathBuf| {
-            if !p.as_os_str().is_empty() && !candidate_dirs.contains(&p) {
-                candidate_dirs.push(p);
-            }
-        };
+    let resolved_path = tokio::task::spawn_blocking(move || -> Option<PathBuf> {
+        let mut resolved: Option<PathBuf> = None;
 
-        if let Some(ref raw_dirs) = base_dir {
-            for part in raw_dirs.split(['\n', ';']) {
-                let trimmed = percent_decode_repeatedly(part.trim());
-                if !trimmed.is_empty() {
-                    let p = PathBuf::from(&trimmed);
-                    push_dir(p.clone());
-                    if let Some(parent) = p.parent() {
-                        push_dir(parent.to_path_buf());
+        // 1. Check if clean_str is already an existing absolute path
+        let initial_path = PathBuf::from(&clean_str_for_task);
+        if initial_path.is_absolute() && initial_path.is_file() {
+            resolved = Some(initial_path);
+        }
+
+        // 2. Search across candidate base directories
+        if resolved.is_none() {
+            let rel_clean = clean_str_for_task
+                .trim_start_matches("./")
+                .trim_start_matches('/');
+            let file_name = Path::new(rel_clean)
+                .file_name()
+                .and_then(|s| s.to_str());
+            let target_ascii_key = file_name.map(fold_to_ascii_key);
+
+            let mut candidate_dirs: Vec<PathBuf> = Vec::new();
+            let mut push_dir = |p: PathBuf| {
+                if !p.as_os_str().is_empty() && !candidate_dirs.contains(&p) {
+                    candidate_dirs.push(p);
+                }
+            };
+
+            if let Some(ref raw_dirs) = base_dir_for_task {
+                for part in raw_dirs.split(['\n', ';']) {
+                    let trimmed = percent_decode_repeatedly(part.trim());
+                    if !trimmed.is_empty() {
+                        let p = PathBuf::from(&trimmed);
+                        push_dir(p.clone());
+                        if let Some(parent) = p.parent() {
+                            push_dir(parent.to_path_buf());
+                        }
                     }
                 }
             }
-        }
 
-        for reg_dir in get_registered_asset_dirs() {
-            push_dir(reg_dir.clone());
-            if let Some(parent) = reg_dir.parent() {
-                push_dir(parent.to_path_buf());
+            for reg_dir in get_registered_asset_dirs() {
+                push_dir(reg_dir.clone());
+                if let Some(parent) = reg_dir.parent() {
+                    push_dir(parent.to_path_buf());
+                }
             }
-        }
 
-        for d in fallback_dirs {
-            push_dir(d);
-        }
-
-        if let Ok(cwd) = std::env::current_dir() {
-            push_dir(cwd.clone());
-            if let Some(parent) = cwd.parent() {
-                push_dir(parent.to_path_buf());
+            for d in fallback_dirs {
+                push_dir(d);
             }
-        }
 
-        for dir in &candidate_dirs {
-            if let Some(found) = find_in_base_dir(
-                dir,
-                rel_clean,
-                file_name,
-                target_ascii_key.as_deref(),
-            ) {
-                resolved_path = Some(found);
-                break;
+            if let Ok(cwd) = std::env::current_dir() {
+                push_dir(cwd.clone());
+                if let Some(parent) = cwd.parent() {
+                    push_dir(parent.to_path_buf());
+                }
             }
-        }
 
-        // 3. Fallback: check immediate subdirectories of candidate_dirs that have an `assets/` folder
-        if resolved_path.is_none() {
-            'outer: for dir in &candidate_dirs {
-                let Ok(entries) = std::fs::read_dir(dir) else {
-                    continue;
-                };
-                for entry in entries.flatten() {
-                    let sub_path = entry.path();
-                    if !sub_path.is_dir() {
-                        continue;
-                    }
-                    let Some(sub_name) = sub_path.file_name().and_then(|n| n.to_str()) else {
+            for dir in &candidate_dirs {
+                if let Some(found) = find_in_base_dir(
+                    dir,
+                    rel_clean,
+                    file_name,
+                    target_ascii_key.as_deref(),
+                ) {
+                    resolved = Some(found);
+                    break;
+                }
+            }
+
+            // 3. Fallback: check immediate subdirectories of candidate_dirs that have an `assets/` folder
+            if resolved.is_none() {
+                'outer: for dir in &candidate_dirs {
+                    let Ok(entries) = std::fs::read_dir(dir) else {
                         continue;
                     };
-                    if sub_name.starts_with('.')
-                        || sub_name == "node_modules"
-                        || sub_name == "target"
-                        || sub_name == "Library"
-                        || sub_name == "Applications"
-                    {
-                        continue;
-                    }
-                    if sub_path.join("assets").is_dir()
-                        && let Some(found) = find_in_base_dir(
-                            &sub_path,
-                            rel_clean,
-                            file_name,
-                            target_ascii_key.as_deref(),
-                        )
-                    {
-                        resolved_path = Some(found);
-                        break 'outer;
+                    for entry in entries.flatten() {
+                        let sub_path = entry.path();
+                        if !sub_path.is_dir() {
+                            continue;
+                        }
+                        let Some(sub_name) = sub_path.file_name().and_then(|n| n.to_str()) else {
+                            continue;
+                        };
+                        if sub_name.starts_with('.')
+                            || sub_name == "node_modules"
+                            || sub_name == "target"
+                            || sub_name == "Library"
+                            || sub_name == "Applications"
+                        {
+                            continue;
+                        }
+                        if sub_path.join("assets").is_dir()
+                            && let Some(found) = find_in_base_dir(
+                                &sub_path,
+                                rel_clean,
+                                file_name,
+                                target_ascii_key.as_deref(),
+                            )
+                        {
+                            resolved = Some(found);
+                            break 'outer;
+                        }
                     }
                 }
             }
         }
-    }
+
+        resolved
+    })
+    .await
+    .map_err(|e| format!("Görsel çözümleme hatası: {}", e))?;
 
     let path = resolved_path.ok_or_else(|| {
         format!(
@@ -433,7 +497,7 @@ pub async fn resolve_and_read_image_base64(
         return Err(format!("Görsel dosyası boş: {}", path.display()));
     }
 
-    // Detect MIME from magic bytes first, then fallback to file extension
+    // Detect MIME from magic bytes first, then fallback to recognized image extensions only
     let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         "image/png"
     } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
@@ -449,12 +513,15 @@ pub async fn resolve_and_read_image_base64(
             .map(|s| s.to_lowercase())
             .unwrap_or_default();
         match ext.as_str() {
+            "png" => "image/png",
             "jpg" | "jpeg" => "image/jpeg",
             "gif" => "image/gif",
             "webp" => "image/webp",
             "svg" => "image/svg+xml",
             "bmp" => "image/bmp",
-            _ => "image/png",
+            "ico" => "image/x-icon",
+            "avif" => "image/avif",
+            _ => return Err("Desteklenmeyen görsel dosyası formatı.".to_string()),
         }
     };
 
@@ -478,8 +545,8 @@ pub async fn read_image_base64(
     if let Ok(desk_dir) = app.path().desktop_dir() {
         fallback_dirs.push(desk_dir);
     }
-    if let Ok(home_dir) = app.path().home_dir() {
-        fallback_dirs.push(home_dir);
+    if let Ok(pic_dir) = app.path().picture_dir() {
+        fallback_dirs.push(pic_dir);
     }
 
     resolve_and_read_image_base64(file_path, base_dir, fallback_dirs).await

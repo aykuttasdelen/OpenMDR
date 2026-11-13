@@ -11,10 +11,10 @@ pub async fn save_html(
         .add_filter("HTML Belgesi", &["html", "htm"])
         .add_filter("Tüm Dosyalar", &["*"]);
 
-    if let Some(dir) = default_dir {
-        if !dir.is_empty() {
-            dialog = dialog.set_directory(std::path::Path::new(&dir));
-        }
+    if let Some(dir) = default_dir
+        && !dir.is_empty()
+    {
+        dialog = dialog.set_directory(std::path::Path::new(&dir));
     }
 
     if let Some(file) = dialog.save_file().await {

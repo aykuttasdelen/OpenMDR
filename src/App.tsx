@@ -49,6 +49,13 @@ import {
   ScanText
 } from 'lucide-react';
 
+function createTabId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `tab-${crypto.randomUUID()}`;
+  }
+  return `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 const STORAGE_KEYS = {
   THEME: 'openmd-theme',
   TABS: 'openmd-session-tabs',
@@ -199,13 +206,17 @@ export const App: React.FC = () => {
     }
   }, [theme]);
 
-  // Session persistence synchronization
+  // Debounced session persistence synchronization
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.TABS, JSON.stringify(tabs));
-    } catch (e) {
-      console.warn('Failed to save tabs session:', e);
-    }
+    const timer = setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEYS.TABS, JSON.stringify(tabs));
+      } catch (e) {
+        console.warn('Failed to save tabs session:', e);
+      }
+    }, 400);
+
+    return () => clearTimeout(timer);
   }, [tabs]);
 
   useEffect(() => {
@@ -569,28 +580,29 @@ export const App: React.FC = () => {
     setRootFolderPath(undefined);
     setFileTree([]);
 
-    setTabs(prev => {
-      const remaining = currentRoot 
-        ? prev.filter(t => !t.filePath || (!t.filePath.startsWith(currentRoot + '/') && !t.filePath.startsWith(currentRoot + '\\')))
-        : [];
-      
-      if (remaining.length === 0) {
-        const untitledPrefix = t('app.untitled');
-        const newTitle = `${untitledPrefix}.md`;
-        const newId = `tab-${Date.now()}`;
-        setActiveTabId(newId);
-        return [{
-          id: newId,
-          title: newTitle,
-          content: `# ${untitledPrefix}\n\n`,
-          savedContent: '',
-          isModified: false
-        }];
+    const remaining = currentRoot
+      ? tabs.filter(t => !t.filePath || (!t.filePath.startsWith(currentRoot + '/') && !t.filePath.startsWith(currentRoot + '\\')))
+      : [];
+
+    if (remaining.length === 0) {
+      const untitledPrefix = t('app.untitled');
+      const newTitle = `${untitledPrefix}.md`;
+      const newId = createTabId();
+      setTabs([{
+        id: newId,
+        title: newTitle,
+        content: `# ${untitledPrefix}\n\n`,
+        savedContent: '',
+        isModified: false
+      }]);
+      setActiveTabId(newId);
+    } else {
+      setTabs(remaining);
+      if (!remaining.some(t => t.id === activeTabId)) {
+        setActiveTabId(remaining[0].id);
       }
-      setActiveTabId(remaining[0].id);
-      return remaining;
-    });
-  }, [rootFolderPath, t]);
+    }
+  }, [rootFolderPath, tabs, activeTabId, t]);
 
   // Close workspace folder with unsaved changes verification (Task 2)
   const handleCloseWorkspace = useCallback(() => {
@@ -868,14 +880,32 @@ export const App: React.FC = () => {
     try {
       await window.electronAPI.deleteFile(filePath);
       await handleRefreshTree();
-      const tabsToClose = tabs.filter(t => t.filePath && (
-        t.filePath === filePath ||
-        t.filePath.startsWith(filePath + '/') ||
-        t.filePath.startsWith(filePath + '\\')
+
+      const remaining = tabs.filter(t => !t.filePath || (
+        t.filePath !== filePath &&
+        !t.filePath.startsWith(filePath + '/') &&
+        !t.filePath.startsWith(filePath + '\\')
       ));
-      for (const t of tabsToClose) {
-        handleCloseTab(t.id);
+
+      if (remaining.length === 0) {
+        const untitledPrefix = t('app.untitled');
+        const newTitle = `${untitledPrefix}.md`;
+        const newId = createTabId();
+        setTabs([{
+          id: newId,
+          title: newTitle,
+          content: `# ${untitledPrefix}\n\n`,
+          savedContent: '',
+          isModified: false
+        }]);
+        setActiveTabId(newId);
+      } else {
+        setTabs(remaining);
+        if (!remaining.some(t => t.id === activeTabId)) {
+          setActiveTabId(remaining[0].id);
+        }
       }
+
       if (rootFolderPath === filePath) {
         setRootFolderPath(undefined);
       }
@@ -1093,6 +1123,42 @@ export const App: React.FC = () => {
 
   // Drag and Drop File & Folder Support
   useEffect(() => {
+    const api = window.electronAPI;
+    if (api?.onFileDrop) {
+      return api.onFileDrop(async (paths: string[]) => {
+        for (const droppedPath of paths) {
+          const name = getBasename(droppedPath);
+
+          if (droppedPath.toLowerCase().endsWith('.pdf')) {
+            setOcrInitialPdfPath(droppedPath);
+            setOcrModalOpen(true);
+            continue;
+          }
+
+          if (isMarkdownFileName(name)) {
+            try {
+              const content = await api.readFile(droppedPath);
+              openFileInTab(droppedPath, name, content);
+            } catch (e) {
+              console.warn('Failed to open file:', droppedPath, e);
+            }
+            continue;
+          }
+
+          try {
+            const tree = await api.readDirectory(droppedPath, filterMdOnly);
+            if (Array.isArray(tree) && tree.length > 0) {
+              setRootFolderPath(droppedPath);
+              setFileTree(tree);
+              setSidebarOpen(true);
+            }
+          } catch {
+            // Not a directory or no markdown files
+          }
+        }
+      });
+    }
+
     const handleDragOver = (e: DragEvent) => {
       e.preventDefault();
       e.stopPropagation();
@@ -1106,32 +1172,18 @@ export const App: React.FC = () => {
 
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        const filePath = (file as any).path || '';
-
-        // If dropping a folder in Electron
-        if (filePath && window.electronAPI) {
-          try {
-            const tree = await window.electronAPI.readDirectory(filePath, filterMdOnly);
-            if (Array.isArray(tree)) {
-              setRootFolderPath(filePath);
-              setFileTree(tree);
-              setSidebarOpen(true);
-              continue;
-            }
-          } catch {
-            // Not a directory
-          }
-        }
-
         if (file.name.toLowerCase().endsWith('.pdf')) {
-          setOcrInitialPdfPath(filePath || null);
+          setOcrInitialPdfPath(null);
           setOcrModalOpen(true);
           continue;
         }
-
         if (isMarkdownFileName(file.name)) {
-          const content = await file.text();
-          openFileInTab(filePath || file.name, file.name, content);
+          try {
+            const content = await file.text();
+            openFileInTab(file.name, file.name, content);
+          } catch (e) {
+            console.warn('Failed to open file:', file.name, e);
+          }
         }
       }
     };

@@ -70,8 +70,8 @@ export interface ElectronAPI {
   saveFileDialog: (defaultName?: string, content?: string, defaultDir?: string) => Promise<string | null>;
   openDirectoryDialog: (markdownOnly?: boolean) => Promise<{ dirPath: string; tree: FileItem[] } | null>;
   readDirectory: (dirPath: string, markdownOnly?: boolean) => Promise<FileItem[]>;
-  createFile: (dirPath: string, fileName: string) => Promise<string | null>;
-  createDirectory: (parentPath: string, dirName: string) => Promise<string | null>;
+  createFile: (dirPath: string, fileName: string) => Promise<string>;
+  createDirectory: (parentPath: string, dirName: string) => Promise<string>;
   deleteFile: (filePath: string) => Promise<boolean>;
   renameFile: (oldPath: string, newPath: string) => Promise<boolean>;
   showInFolder: (filePath: string) => Promise<void>;
@@ -85,11 +85,12 @@ export interface ElectronAPI {
   setWindowTheme?: (theme: ThemeMode) => Promise<void>;
   setLanguage: (lang: string) => Promise<boolean>;
   closeWindow: (force?: boolean) => Promise<void>;
-  cancelClose: () => Promise<boolean>;
+  cancelClose: () => Promise<void>;
   processPdfOCR?: (options: OCROptions) => Promise<OCRResult>;
   onOCRProgress?: (callback: (progress: OCRProgress) => void) => () => void;
   onMenuCommand: (callback: (command: string) => void) => () => void;
   onWindowClosing: (callback: () => void) => () => void;
+  onFileDrop?: (callback: (paths: string[]) => void) => () => void;
 }
 
 declare global {

@@ -136,6 +136,7 @@ export const translations: Record<Language, Translations> = {
     'command.zoomOut': 'Yazı Boyutunu Küçült',
     'command.zoomReset': 'Yazı Boyutunu Sıfırla (14px)',
     'command.themeToggle': 'Temayı Değiştir ({target})',
+    'command.noResults': 'Sonuç bulunamadı',
 
     // ExportModal
     'export.title': 'Belgeyi Dışa Aktar',
@@ -353,6 +354,7 @@ export const translations: Record<Language, Translations> = {
     'command.zoomOut': 'Zoom Out Font Size',
     'command.zoomReset': 'Reset Font Size (14px)',
     'command.themeToggle': 'Toggle Theme ({target})',
+    'command.noResults': 'No results found',
 
     // ExportModal
     'export.title': 'Export Document',

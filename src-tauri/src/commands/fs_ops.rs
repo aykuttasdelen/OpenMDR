@@ -1,7 +1,29 @@
 use crate::models::FileItem;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use tokio::io::AsyncWriteExt;
+
+fn validate_single_component(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("İsim boş olamaz.".to_string());
+    }
+    if name == "." || name == ".." {
+        return Err("İsim '.' veya '..' olamaz.".to_string());
+    }
+    if name.contains('/') || name.contains('\\') || name.contains('\0') {
+        return Err("İsim '/', '\\' veya NUL karakteri içeremez.".to_string());
+    }
+    let mut components = Path::new(name).components();
+    match components.next() {
+        Some(Component::Normal(_)) => {}
+        _ => return Err("Geçersiz dosya adı.".to_string()),
+    }
+    if components.next().is_some() {
+        return Err("Geçersiz dosya adı.".to_string());
+    }
+    Ok(())
+}
 
 pub fn scan_dir_recursive(
     dir_path: &Path,
@@ -48,7 +70,13 @@ pub fn scan_dir_recursive(
                     let has_any_real_entry = sub_entries.any(|e| {
                         if let Ok(sub) = e {
                             let sub_name = sub.file_name().to_string_lossy().to_string();
-                            !sub_name.starts_with('.') && sub_name != "target"
+                            let is_hidden =
+                                sub_name.starts_with('.') && sub_name != ".cursor" && sub_name != ".agents";
+                            !is_hidden
+                                && sub_name != "node_modules"
+                                && sub_name != "dist"
+                                && sub_name != "dist-electron"
+                                && sub_name != "target"
                         } else {
                             false
                         }
@@ -104,17 +132,25 @@ pub fn scan_dir_recursive(
 }
 
 #[tauri::command]
-pub async fn read_file(file_path: String) -> Result<String, String> {
-    crate::commands::image_ops::register_asset_search_dir(Path::new(&file_path));
+pub async fn read_file(app: tauri::AppHandle, file_path: String) -> Result<String, String> {
+    let path = Path::new(&file_path);
+    crate::commands::image_ops::register_asset_search_dir(path);
+    crate::commands::image_ops::allow_asset_dir(&app, path);
     tokio::fs::read_to_string(&file_path)
         .await
         .map_err(|e| format!("Dosya okunamadı: {}", e))
 }
 
 #[tauri::command]
-pub async fn write_file(file_path: String, content: String) -> Result<bool, String> {
-    crate::commands::image_ops::register_asset_search_dir(Path::new(&file_path));
-    if let Some(parent) = Path::new(&file_path).parent()
+pub async fn write_file(
+    app: tauri::AppHandle,
+    file_path: String,
+    content: String,
+) -> Result<bool, String> {
+    let path = Path::new(&file_path);
+    crate::commands::image_ops::register_asset_search_dir(path);
+    crate::commands::image_ops::allow_asset_dir(&app, path);
+    if let Some(parent) = path.parent()
         && !parent.exists()
     {
         tokio::fs::create_dir_all(parent)
@@ -130,11 +166,13 @@ pub async fn write_file(file_path: String, content: String) -> Result<bool, Stri
 
 #[tauri::command]
 pub async fn scan_directory(
+    app: tauri::AppHandle,
     dir_path: String,
     markdown_only: Option<bool>,
 ) -> Result<Vec<FileItem>, String> {
     let path = PathBuf::from(dir_path);
     crate::commands::image_ops::register_asset_search_dir(&path);
+    crate::commands::image_ops::allow_asset_dir(&app, &path);
     let md_only = markdown_only.unwrap_or(true);
     let items = tokio::task::spawn_blocking(move || {
         scan_dir_recursive(&path, 0, 4, md_only)
@@ -147,10 +185,13 @@ pub async fn scan_directory(
 
 #[tauri::command]
 pub async fn create_file(dir_path: String, file_name: String) -> Result<String, String> {
-    let has_ext = file_name.ends_with(".md")
-        || file_name.ends_with(".mdx")
-        || file_name.ends_with(".markdown")
-        || file_name.ends_with(".txt");
+    validate_single_component(&file_name)?;
+
+    let lower = file_name.to_lowercase();
+    let has_ext = lower.ends_with(".md")
+        || lower.ends_with(".mdx")
+        || lower.ends_with(".markdown")
+        || lower.ends_with(".txt");
     let final_name = if has_ext {
         file_name
     } else {
@@ -158,9 +199,6 @@ pub async fn create_file(dir_path: String, file_name: String) -> Result<String, 
     };
 
     let target_path = Path::new(&dir_path).join(&final_name);
-    if target_path.exists() {
-        return Err("Bu isimde bir dosya zaten var.".to_string());
-    }
 
     let stem = target_path
         .file_stem()
@@ -168,15 +206,33 @@ pub async fn create_file(dir_path: String, file_name: String) -> Result<String, 
         .unwrap_or("Yeni Belge");
     let starter_content = format!("# {}\n\n", stem);
 
-    tokio::fs::write(&target_path, starter_content)
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target_path)
+        .await
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                "Bu isimde bir dosya zaten var.".to_string()
+            } else {
+                format!("Dosya oluşturulamadı: {}", e)
+            }
+        })?;
+
+    file.write_all(starter_content.as_bytes())
         .await
         .map_err(|e| format!("Dosya oluşturulamadı: {}", e))?;
+    file.flush()
+        .await
+        .map_err(|e| format!("Dosya yazılamadı: {}", e))?;
 
     Ok(target_path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
 pub async fn create_directory(parent_path: String, dir_name: String) -> Result<String, String> {
+    validate_single_component(&dir_name)?;
+
     let target_path = Path::new(&parent_path).join(&dir_name);
     tokio::fs::create_dir_all(&target_path)
         .await
@@ -195,30 +251,18 @@ pub async fn rename_file(old_path: String, new_path: String) -> Result<bool, Str
 #[tauri::command]
 pub async fn delete_file(file_path: String) -> Result<bool, String> {
     let path_clone = file_path.clone();
-    let trash_res = tokio::task::spawn_blocking(move || {
-        trash::delete(Path::new(&path_clone))
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-
-    if trash_res.is_err() {
-        let path = Path::new(&file_path);
-        if path.is_dir() {
-            tokio::fs::remove_dir_all(path)
-                .await
-                .map_err(|e| format!("Silinemedi: {}", e))?;
-        } else {
-            tokio::fs::remove_file(path)
-                .await
-                .map_err(|e| format!("Silinemedi: {}", e))?;
-        }
-    }
+    tokio::task::spawn_blocking(move || trash::delete(Path::new(&path_clone)))
+        .await
+        .map_err(|e| format!("Silme görevi başarısız: {}", e))?
+        .map_err(|e| format!("Çöp kutusuna taşınamadı: {}", e))?;
 
     Ok(true)
 }
 
 #[tauri::command]
 pub async fn get_available_path(base_dir: String, file_name: String) -> Result<String, String> {
+    validate_single_component(&file_name)?;
+
     let base = Path::new(&base_dir);
     let mut candidate = base.join(&file_name);
 
@@ -239,16 +283,14 @@ pub async fn get_available_path(base_dir: String, file_name: String) -> Result<S
 
     // Clean stem from trailing numbering e.g. "İsimsiz 2" or "İsimsiz2" -> "İsimsiz"
     let clean_stem = {
-        let trimmed = stem.trim_end();
-        if let Some(pos) = trimmed.rfind(|c: char| !c.is_ascii_digit()) {
-            let (prefix, digits) = trimmed.split_at(pos + 1);
-            if !digits.is_empty() {
-                prefix.trim_end().to_string()
-            } else {
-                stem.clone()
-            }
-        } else {
+        let result = stem
+            .trim_end()
+            .trim_end_matches(|c: char| c.is_ascii_digit())
+            .trim_end();
+        if result.is_empty() {
             stem.clone()
+        } else {
+            result.to_string()
         }
     };
 
@@ -260,7 +302,7 @@ pub async fn get_available_path(base_dir: String, file_name: String) -> Result<S
         }
         counter += 1;
         if counter > 1000 {
-            return Ok(candidate.to_string_lossy().to_string());
+            return Err("Uygun dosya adı bulunamadı.".to_string());
         }
     }
 }

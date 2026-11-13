@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, FileCode, Printer, Check, Copy, FolderOpen } from 'lucide-react';
-import { generateStandaloneHTML } from '../utils/markdownUtils';
+import { generateStandaloneHTML, escapeHtml } from '../utils/markdownUtils';
 import { useTranslation } from '../i18n/LanguageContext';
 
 interface ExportModalProps {
@@ -21,41 +21,57 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const { t } = useTranslation();
   const [copiedHTML, setCopiedHTML] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [status, setStatus] = useState<{ kind: 'error' | 'info'; text: string } | null>(null);
   const [lastSavedPath, setLastSavedPath] = useState<string | null>(null);
   const [copiedMD, setCopiedMD] = useState(false);
 
+  useEffect(() => {
+    if (isOpen) {
+      setStatus(null);
+      setLastSavedPath(null);
+    }
+  }, [isOpen]);
+
   if (!isOpen) return null;
+
+  const getRenderedInnerHTML = () => {
+    const previewEl = document.querySelector('.preview-content');
+    if (previewEl) {
+      const clone = previewEl.cloneNode(true) as HTMLElement;
+      clone.querySelectorAll('.copy-code-btn').forEach(el => el.remove());
+      return clone.innerHTML;
+    }
+    return `<pre>${escapeHtml(markdownContent)}</pre>`;
+  };
 
   const handleExportHTML = async () => {
     try {
       setExporting(true);
-      const previewEl = document.querySelector('.preview-content');
-      const innerHTML = previewEl ? previewEl.innerHTML : `<pre>${markdownContent}</pre>`;
+      const innerHTML = getRenderedInnerHTML();
       const fullHTML = generateStandaloneHTML(documentTitle, innerHTML);
 
       if (window.electronAPI) {
-        const defaultName = `${documentTitle.replace(/\.md$/, '')}.html`;
+        const defaultName = `${documentTitle.replace(/\.mdx?$/i, '')}.html`;
         const savedPath = await window.electronAPI.saveHTMLFile(fullHTML, defaultName, defaultDir);
         if (savedPath) {
           setLastSavedPath(savedPath);
-          setMessage(t('export.htmlSuccess', { path: savedPath }));
+          setStatus({ kind: 'info', text: t('export.htmlSuccess', { path: savedPath }) });
         } else {
           setLastSavedPath(null);
-          setMessage(t('export.htmlCanceled'));
+          setStatus({ kind: 'info', text: t('export.htmlCanceled') });
         }
       } else {
         const blob = new Blob([fullHTML], { type: 'text/html;charset=utf-8' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `${documentTitle.replace(/\.md$/, '')}.html`;
+        a.download = `${documentTitle.replace(/\.mdx?$/i, '')}.html`;
         a.click();
         URL.revokeObjectURL(url);
-        setMessage(t('export.htmlDownloaded'));
+        setStatus({ kind: 'info', text: t('export.htmlDownloaded') });
       }
     } catch (err: any) {
-      setMessage(t('export.error', { error: err.message }));
+      setStatus({ kind: 'error', text: t('export.error', { error: err.message }) });
     } finally {
       setExporting(false);
     }
@@ -64,32 +80,29 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const handleExportPDF = async () => {
     try {
       setExporting(true);
-      const previewEl = document.querySelector('.preview-content');
-      const innerHTML = previewEl ? previewEl.innerHTML : `<pre>${markdownContent}</pre>`;
+      const innerHTML = getRenderedInnerHTML();
       const fullHTML = generateStandaloneHTML(documentTitle, innerHTML);
 
       if (window.electronAPI) {
-        const defaultName = `${documentTitle.replace(/\.md$/, '')}.pdf`;
+        const defaultName = `${documentTitle.replace(/\.mdx?$/i, '')}.pdf`;
         await window.electronAPI.exportPDF(fullHTML, defaultName);
         setLastSavedPath(null);
-        setMessage(t('export.pdfPrompt'));
+        setStatus({ kind: 'info', text: t('export.pdfPrompt') });
       } else {
         window.print();
       }
     } catch (err: any) {
-      setMessage(t('export.error', { error: err.message }));
+      setStatus({ kind: 'error', text: t('export.error', { error: err.message }) });
     } finally {
       setExporting(false);
     }
   };
 
   const handleCopyRenderedHTML = () => {
-    const previewEl = document.querySelector('.preview-content');
-    if (previewEl) {
-      navigator.clipboard.writeText(previewEl.innerHTML);
-      setCopiedHTML(true);
-      setTimeout(() => setCopiedHTML(false), 2000);
-    }
+    const innerHTML = getRenderedInnerHTML();
+    navigator.clipboard.writeText(innerHTML);
+    setCopiedHTML(true);
+    setTimeout(() => setCopiedHTML(false), 2000);
   };
 
   const handleCopyMarkdown = () => {
@@ -124,19 +137,19 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         </div>
 
         <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {message && (
+          {status && (
             <div style={{
-              background: message.startsWith('Hata') || message.includes('error') ? 'var(--danger-subtle)' : 'var(--accent-subtle)',
-              border: `1px solid ${message.startsWith('Hata') || message.includes('error') ? 'var(--danger-color)' : 'var(--accent-primary)'}`,
+              background: status.kind === 'error' ? 'var(--danger-subtle)' : 'var(--accent-subtle)',
+              border: `1px solid ${status.kind === 'error' ? 'var(--danger-color)' : 'var(--accent-primary)'}`,
               borderRadius: 'var(--radius-sm)',
               padding: '10px 14px',
               fontSize: 13,
               display: 'flex',
               flexDirection: 'column',
               gap: 8,
-              color: message.startsWith('Hata') || message.includes('error') ? 'var(--danger-color)' : 'var(--accent-primary)'
+              color: status.kind === 'error' ? 'var(--danger-color)' : 'var(--accent-primary)'
             }}>
-              <div>{message}</div>
+              <div>{status.text}</div>
               {lastSavedPath && (
                 <button
                   className="btn-secondary"

@@ -27,20 +27,15 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; img-src 'self' asset: https://asset.localhost data: blob: https:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdn.jsdelivr.net; font-src 'self' data: https://fonts.gstatic.com https://cdn.jsdelivr.net; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://localhost:5173",
       "assetProtocol": {
         "enable": true,
         "scope": [
-          "**",
-          "**/*",
-          "$HOME/**",
-          "$HOME/**/*",
           "$DOCUMENT/**",
-          "$DOCUMENT/**/*",
           "$DOWNLOAD/**",
-          "$DOWNLOAD/**/*",
-          "$TEMP/**",
-          "$TEMP/**/*"
+          "$DESKTOP/**",
+          "$PICTURE/**",
+          "$TEMP/**"
         ]
       }
     }

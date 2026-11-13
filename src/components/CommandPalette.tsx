@@ -108,14 +108,14 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                     </span>
                   </div>
                   {cmd.shortcut && (
-                    <span className="kbd-shortcut">{cmd.shortcut}</span>
+                    <span className="palette-shortcut">{cmd.shortcut}</span>
                   )}
                 </div>
               );
             })
           ) : (
             <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
-              Sonuç bulunamadı
+              {t('command.noResults')}
             </div>
           )}
         </div>

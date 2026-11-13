@@ -22,15 +22,15 @@ fn set_menu_language(app: tauri::AppHandle, lang: String) -> Result<(), String> 
 
 #[tauri::command]
 fn close_window(
-    app: tauri::AppHandle,
+    window: tauri::Window,
     state: State<AppState>,
     force: Option<bool>,
 ) -> Result<(), String> {
     if force.unwrap_or(false) {
         state.force_close.store(true, Ordering::SeqCst);
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.close();
-        }
+        let _ = window.close();
+    } else {
+        let _ = window.emit("app:window-closing", ());
     }
     Ok(())
 }
@@ -66,7 +66,7 @@ fn set_window_theme(
         "dark" => Some(tauri::Theme::Dark),
         _ => None,
     };
-    let _ = app.set_theme(tauri_theme);
+    app.set_theme(tauri_theme);
     let _ = window.set_theme(tauri_theme);
 
     #[cfg(target_os = "macos")]
@@ -75,23 +75,23 @@ fn set_window_theme(
             NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua,
             NSAppearanceNameDarkAqua, NSWindow,
         };
-        if let Ok(window_ptr) = window.ns_window() {
-            unsafe {
-                let ns_window = &*window_ptr.cast::<NSWindow>();
-                let appearance_name = match theme.as_str() {
-                    "light" => Some(NSAppearanceNameAqua),
-                    "dark" => Some(NSAppearanceNameDarkAqua),
-                    _ => None,
-                };
-                if let Some(name) = appearance_name {
-                    if let Some(appearance) = NSAppearance::appearanceNamed(name) {
-                        ns_window.setAppearance(Some(&appearance));
-                    }
-                } else {
-                    ns_window.setAppearance(None);
+        let win_clone = window.clone();
+        let theme_clone = theme.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Ok(window_ptr) = win_clone.ns_window()
+                && !window_ptr.is_null()
+            {
+                unsafe {
+                    let ns_window = &*window_ptr.cast::<NSWindow>();
+                    let appearance = match theme_clone.as_str() {
+                        "light" => NSAppearance::appearanceNamed(NSAppearanceNameAqua),
+                        "dark" => NSAppearance::appearanceNamed(NSAppearanceNameDarkAqua),
+                        _ => None,
+                    };
+                    ns_window.setAppearance(appearance.as_deref());
                 }
             }
-        }
+        });
     }
 
     Ok(())
@@ -120,16 +120,19 @@ pub fn run() {
             let menu = build_app_menu(handle, false)?;
             app.set_menu(menu)?;
 
-            // Allow asset protocol to load files from local filesystems (e.g. assets/ for markdown preview)
-            #[cfg(not(target_os = "windows"))]
+            // Scope asset protocol to user document directories; opened workspaces/files are added dynamically
+            let asset_scope = app.asset_protocol_scope();
+            for dir in [
+                app.path().document_dir(),
+                app.path().download_dir(),
+                app.path().desktop_dir(),
+                app.path().picture_dir(),
+                app.path().temp_dir(),
+            ]
+            .into_iter()
+            .flatten()
             {
-                let _ = app.asset_protocol_scope().allow_directory("/", true);
-            }
-            #[cfg(target_os = "windows")]
-            {
-                if let Ok(home) = app.path().home_dir() {
-                    let _ = app.asset_protocol_scope().allow_directory(home, true);
-                }
+                let _ = asset_scope.allow_directory(dir, true);
             }
 
             Ok(())
@@ -358,5 +361,82 @@ mod tests {
         assert_eq!(result_assets.extracted_images, vec!["assets/img-p1-1.png"]);
         assert_eq!(result_assets.pages[0].images, vec!["assets/img-p1-1.png"]);
         assert!(result_assets.pages[1].images.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fs_ops_security_and_utf8() {
+        let dir = tempdir().unwrap();
+        let base = dir.path().to_str().unwrap().to_string();
+
+        assert!(fs_ops::create_file(base.clone(), "../escape.md".to_string()).await.is_err());
+        assert!(fs_ops::create_file(base.clone(), "sub/file.md".to_string()).await.is_err());
+        assert!(fs_ops::create_file(base.clone(), "..".to_string()).await.is_err());
+        assert!(fs_ops::create_file(base.clone(), String::new()).await.is_err());
+
+        assert!(fs_ops::create_directory(base.clone(), "../dir".to_string()).await.is_err());
+        assert!(fs_ops::get_available_path(base.clone(), "../x.md".to_string()).await.is_err());
+
+        let created_path = fs_ops::create_file(base.clone(), "CaseTest.MD".to_string())
+            .await
+            .unwrap();
+        assert!(created_path.ends_with("CaseTest.MD"));
+        let created_content = fs::read_to_string(&created_path).unwrap();
+        assert!(created_content.contains("# CaseTest"));
+        assert!(fs_ops::create_file(base.clone(), "CaseTest.MD".to_string()).await.is_err());
+
+        let utf8_file = dir.path().join("Ö2.md");
+        fs::write(&utf8_file, "test").unwrap();
+        let available_path = fs_ops::get_available_path(base, "Ö2.md".to_string())
+            .await
+            .unwrap();
+        assert!(available_path.ends_with("Ö 2.md"));
+    }
+
+    #[tokio::test]
+    async fn test_image_ops_security() {
+        use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+
+        let dir = tempdir().unwrap();
+        let base = dir.path().to_str().unwrap().to_string();
+
+        let svg_b64 = BASE64.encode(b"<svg><script>alert(1)</script></svg>");
+        assert!(
+            image_ops::save_image(base.clone(), svg_b64, "image/svg+xml".to_string())
+                .await
+                .is_err()
+        );
+
+        assert!(
+            image_ops::resolve_and_read_image_base64(
+                "../secret.png".to_string(),
+                Some(base.clone()),
+                vec![]
+            )
+            .await
+            .is_err()
+        );
+
+        let txt_path = dir.path().join("notes.txt");
+        fs::write(&txt_path, "secret text").unwrap();
+        assert!(
+            image_ops::resolve_and_read_image_base64(
+                "notes.txt".to_string(),
+                Some(base.clone()),
+                vec![]
+            )
+            .await
+            .is_err()
+        );
+
+        let png_path = dir.path().join("ok.png");
+        fs::write(&png_path, b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR").unwrap();
+        let data_url = image_ops::resolve_and_read_image_base64(
+            "ok.png".to_string(),
+            Some(base),
+            vec![],
+        )
+        .await
+        .unwrap();
+        assert!(data_url.starts_with("data:image/png;base64,"));
     }
 }

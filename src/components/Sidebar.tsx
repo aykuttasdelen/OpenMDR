@@ -146,13 +146,23 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   };
 
   const submitRename = async () => {
-    if (!renamingPath || !renamingName.trim()) {
+    if (!renamingPath) {
       setRenamingPath(null);
+      return;
+    }
+    const trimmedName = renamingName.trim();
+    if (!trimmedName) {
+      setRenamingPath(null);
+      return;
+    }
+    if (trimmedName === '.' || trimmedName === '..' || trimmedName.includes('/') || trimmedName.includes('\\')) {
+      alert(t('app.errorPrefix', { error: 'Invalid file name' }));
       return;
     }
     const oldPath = renamingPath;
     const dir = getDirname(oldPath);
-    const newPath = dir ? `${dir}/${renamingName.trim()}` : renamingName.trim();
+    const sep = oldPath.includes('\\') ? '\\' : '/';
+    const newPath = dir ? `${dir}${sep}${trimmedName}` : trimmedName;
     setRenamingPath(null);
 
     if (oldPath !== newPath) {
@@ -162,6 +172,22 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
         alert(err.message);
       }
     }
+  };
+
+  const itemMatchesFilter = (item: FileItem, query: string, mdOnly: boolean): boolean => {
+    if (!item.isDirectory) {
+      if (mdOnly && !isMarkdownFileName(item.name)) {
+        return false;
+      }
+      return !query || item.name.toLowerCase().includes(query);
+    }
+    if (!query) {
+      return true;
+    }
+    if (item.name.toLowerCase().includes(query)) {
+      return true;
+    }
+    return Boolean(item.children?.some(child => itemMatchesFilter(child, query, mdOnly)));
   };
 
   const renderInlineCreation = (parentPath: string, depth: number) => {
@@ -225,19 +251,11 @@ export const Sidebar: React.FC<SidebarProps> = React.memo(({
   };
 
   const renderTree = (items: FileItem[], depth = 0) => {
+    const query = searchFilter.trim().toLowerCase();
     return items
-      .filter(item => {
-        if (!item.isDirectory && filterMdOnly) {
-          // Task 1: Strict markdown filtering (.md and .mdx)
-          if (!isMarkdownFileName(item.name)) {
-            return false;
-          }
-        }
-        if (!searchFilter) return true;
-        return item.name.toLowerCase().includes(searchFilter.toLowerCase());
-      })
+      .filter(item => itemMatchesFilter(item, query, filterMdOnly))
       .map(item => {
-        const isExpanded = expandedFolders[item.path] !== false;
+        const isExpanded = query ? true : expandedFolders[item.path] !== false;
         const isMarkdown = isMarkdownFileName(item.name);
         const isActive = activeFilePath === item.path;
         const isRenaming = renamingPath === item.path;

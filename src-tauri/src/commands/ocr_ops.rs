@@ -93,16 +93,15 @@ fn resolve_ocr_target(app: &AppHandle) -> Result<OCRExecutionTarget, String> {
     }
 
     // 2. Check next to current executable
-    if found_bin.is_none() {
-        if let Ok(curr_exe) = std::env::current_exe() {
-            if let Some(parent) = curr_exe.parent() {
-                for rel in ["ocr_engine", "native/ocr_engine"] {
-                    let candidate = parent.join(rel);
-                    if candidate.exists() {
-                        found_bin = Some(candidate);
-                        break;
-                    }
-                }
+    if found_bin.is_none()
+        && let Ok(curr_exe) = std::env::current_exe()
+        && let Some(parent) = curr_exe.parent()
+    {
+        for rel in ["ocr_engine", "native/ocr_engine"] {
+            let candidate = parent.join(rel);
+            if candidate.exists() {
+                found_bin = Some(candidate);
+                break;
             }
         }
     }
@@ -123,22 +122,35 @@ fn resolve_ocr_target(app: &AppHandle) -> Result<OCRExecutionTarget, String> {
         }
     }
 
+    // In release builds, prefer bundled binary over compiling script on end-user machine
+    if !cfg!(debug_assertions)
+        && let Some(bin) = found_bin
+    {
+        return Ok(OCRExecutionTarget::CompiledBinary(bin));
+    }
+
     // If script is available, compile/cache to temp_dir outside src-tauri watcher whenever script is newer than cached_bin
     if let Some(ref script) = found_script {
         let cached_bin = std::env::temp_dir().join("openmd_ocr_engine");
         if !cached_bin.exists() || is_newer(script, &cached_bin) {
+            let tmp_bin = std::env::temp_dir().join(format!(
+                "openmd_ocr_engine.{}.tmp",
+                std::process::id()
+            ));
             let status = std::process::Command::new("swiftc")
                 .arg("-O")
                 .arg(script)
                 .arg("-o")
-                .arg(&cached_bin)
+                .arg(&tmp_bin)
                 .status();
-            if let Ok(s) = status
-                && s.success()
-                && cached_bin.exists()
+            let compile_ok = matches!(status, Ok(s) if s.success());
+            if compile_ok
+                && tmp_bin.exists()
+                && std::fs::rename(&tmp_bin, &cached_bin).is_ok()
             {
                 return Ok(OCRExecutionTarget::CompiledBinary(cached_bin));
             }
+            let _ = std::fs::remove_file(&tmp_bin);
         } else {
             return Ok(OCRExecutionTarget::CompiledBinary(cached_bin));
         }
@@ -155,6 +167,7 @@ fn resolve_ocr_target(app: &AppHandle) -> Result<OCRExecutionTarget, String> {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn process_pdf_ocr(
     app: AppHandle,
     pdf_path: String,
@@ -167,13 +180,17 @@ pub async fn process_pdf_ocr(
     image_placement: Option<String>,
 ) -> Result<OCRResult, String> {
     let path = Path::new(&pdf_path);
-    if !path.exists() {
+    if !path.exists() || !path.is_file() {
         return Err(format!("Belirtilen PDF dosyası bulunamadı: {}", pdf_path));
     }
 
     crate::commands::image_ops::register_asset_search_dir(path);
+    crate::commands::image_ops::allow_asset_dir(&app, path);
 
-    let target = resolve_ocr_target(&app)?;
+    let app_clone = app.clone();
+    let target = tokio::task::spawn_blocking(move || resolve_ocr_target(&app_clone))
+        .await
+        .map_err(|e| format!("OCR hedef çözümü başarısız: {}", e))??;
 
     let page_arg = pages.unwrap_or_else(|| "all".to_string());
     let lang_arg = languages.unwrap_or_else(|| "tr-TR,en-US".to_string());
@@ -191,7 +208,9 @@ pub async fn process_pdf_ocr(
     });
 
     if !output_dir_arg.is_empty() {
-        crate::commands::image_ops::register_asset_search_dir(Path::new(&output_dir_arg));
+        let out_path = Path::new(&output_dir_arg);
+        crate::commands::image_ops::register_asset_search_dir(out_path);
+        crate::commands::image_ops::allow_asset_dir(&app, out_path);
     }
 
     let mut common_args = vec![
@@ -210,11 +229,11 @@ pub async fn process_pdf_ocr(
         common_args.push("--output-dir".to_string());
         common_args.push(output_dir_arg);
     }
-    if let Some(sub) = subfolder {
-        if !sub.trim().is_empty() {
-            common_args.push("--subfolder".to_string());
-            common_args.push(sub);
-        }
+    if let Some(sub) = subfolder
+        && !sub.trim().is_empty()
+    {
+        common_args.push("--subfolder".to_string());
+        common_args.push(sub);
     }
     let placement_arg = image_placement.unwrap_or_else(|| "folderOnly".to_string());
     common_args.push("--placement".to_string());
@@ -236,6 +255,7 @@ pub async fn process_pdf_ocr(
 
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    cmd.kill_on_drop(true);
 
     let mut child = cmd
         .spawn()
@@ -245,6 +265,30 @@ pub async fn process_pdf_ocr(
         .stdout
         .take()
         .ok_or_else(|| "OCR standart çıktı kanalı alınamadı.".to_string())?;
+
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "OCR hata çıktı kanalı alınamadı.".to_string())?;
+    let stderr_task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = String::new();
+        let mut chunk = [0u8; 4096];
+        const MAX_STDERR_BYTES: usize = 32 * 1024;
+        loop {
+            match stderr.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if buf.len() < MAX_STDERR_BYTES {
+                        let remaining = MAX_STDERR_BYTES - buf.len();
+                        let take = n.min(remaining);
+                        buf.push_str(&String::from_utf8_lossy(&chunk[..take]));
+                    }
+                }
+            }
+        }
+        buf
+    });
 
     let mut reader = BufReader::new(stdout).lines();
     let mut final_result: Option<OCRResult> = None;
@@ -256,10 +300,10 @@ pub async fn process_pdf_ocr(
         }
 
         // Try parsing progress event
-        if let Ok(progress) = serde_json::from_str::<OCRProgressPayload>(trimmed) {
-            if progress.msg_type == "progress" {
-                let _ = app.emit("ocr:progress", progress);
-            }
+        if let Ok(progress) = serde_json::from_str::<OCRProgressPayload>(trimmed)
+            && progress.msg_type == "progress"
+        {
+            let _ = app.emit("ocr:progress", progress);
         }
 
         // Try parsing final result
@@ -273,6 +317,8 @@ pub async fn process_pdf_ocr(
         .await
         .map_err(|e| format!("OCR süreci beklenirken hata oluştu: {}", e))?;
 
+    let stderr_output = stderr_task.await.unwrap_or_default();
+
     if let Some(res) = final_result {
         if !res.success {
             return Err(res
@@ -280,14 +326,21 @@ pub async fn process_pdf_ocr(
                 .unwrap_or_else(|| "Bilinmeyen bir OCR hatası oluştu.".to_string()));
         }
         Ok(res)
-    } else {
-        if !status.success() {
+    } else if !status.success() {
+        let stderr_snippet = stderr_output.trim();
+        if !stderr_snippet.is_empty() {
+            Err(format!(
+                "OCR motoru hata kodu ile sonlandı ({:?}): {}",
+                status.code(),
+                stderr_snippet
+            ))
+        } else {
             Err(format!(
                 "OCR motoru hata kodu ile sonlandı ({:?})",
                 status.code()
             ))
-        } else {
-            Err("OCR işlemi tamamlandı ancak geçerli bir sonuç üretilemedi.".to_string())
         }
+    } else {
+        Err("OCR işlemi tamamlandı ancak geçerli bir sonuç üretilemedi.".to_string())
     }
 }

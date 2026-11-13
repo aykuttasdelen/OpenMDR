@@ -1,6 +1,34 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { FileItem, OCRProgress, OCRResult, OCROptions } from '../types/electron';
+import { escapeHtml } from '../utils/markdownUtils';
+
+function subscribeEvent<T>(
+  eventName: string,
+  handler: (payload: T) => void
+): () => void {
+  let cancelled = false;
+  let unlistenFn: (() => void) | null = null;
+
+  listen<T>(eventName, (event) => {
+    handler(event.payload);
+  }).then((fn) => {
+    if (cancelled) {
+      fn();
+    } else {
+      unlistenFn = fn;
+    }
+  });
+
+  return () => {
+    cancelled = true;
+    if (unlistenFn) {
+      unlistenFn();
+      unlistenFn = null;
+    }
+  };
+}
 
 export interface OpenFileResult {
   filePath: string;
@@ -61,14 +89,14 @@ export const tauriAPI = {
     return invoke<FileItem[]>('scan_directory', { dirPath, markdownOnly });
   },
 
-  createFile: async (dirPath: string, fileName: string): Promise<string | null> => {
+  createFile: async (dirPath: string, fileName: string): Promise<string> => {
     return invoke<string>('create_file', { dirPath, fileName });
   },
 
   createDirectory: async (
     parentPath: string,
     dirName: string
-  ): Promise<string | null> => {
+  ): Promise<string> => {
     return invoke<string>('create_directory', { parentPath, dirName });
   },
 
@@ -88,7 +116,7 @@ export const tauriAPI = {
     baseDir: string,
     base64Data: string,
     mimeType: string
-  ): Promise<string | null> => {
+  ): Promise<string> => {
     return invoke<string>('save_image', { baseDir, base64Data, mimeType });
   },
 
@@ -111,7 +139,14 @@ export const tauriAPI = {
     defaultTitle?: string
   ): Promise<boolean> => {
     if (htmlContent) {
-      // In WebKit / Safari, window.print() prints the page or standalone HTML
+      let contentToPrint = htmlContent;
+      if (defaultTitle && !/<title>/i.test(htmlContent)) {
+        contentToPrint = htmlContent.replace(
+          /<head([^>]*)>/i,
+          `<head$1><title>${escapeHtml(defaultTitle)}</title>`
+        );
+      }
+
       const printFrame = document.createElement('iframe');
       printFrame.style.position = 'fixed';
       printFrame.style.right = '0';
@@ -121,18 +156,37 @@ export const tauriAPI = {
       printFrame.style.border = '0';
       document.body.appendChild(printFrame);
 
-      const frameDoc = printFrame.contentWindow?.document;
-      if (frameDoc) {
-        frameDoc.open();
-        frameDoc.write(htmlContent);
-        frameDoc.close();
-        setTimeout(() => {
-          printFrame.contentWindow?.focus();
-          printFrame.contentWindow?.print();
-          setTimeout(() => document.body.removeChild(printFrame), 1000);
-        }, 300);
-        return true;
-      }
+      let printed = false;
+      const cleanup = () => {
+        if (printFrame.parentNode) {
+          printFrame.parentNode.removeChild(printFrame);
+        }
+      };
+
+      const doPrint = () => {
+        if (printed) return;
+        printed = true;
+        const frameWindow = printFrame.contentWindow;
+        if (frameWindow) {
+          frameWindow.addEventListener('afterprint', cleanup);
+          frameWindow.focus();
+          frameWindow.print();
+        }
+      };
+
+      printFrame.onload = () => {
+        doPrint();
+      };
+
+      printFrame.srcdoc = contentToPrint;
+
+      setTimeout(() => {
+        doPrint();
+      }, 500);
+
+      setTimeout(cleanup, 2000);
+
+      return true;
     }
     window.print();
     return true;
@@ -210,46 +264,40 @@ export const tauriAPI = {
   },
 
   onOCRProgress: (callback: (progress: OCRProgress) => void): (() => void) => {
-    let unlistenFn: (() => void) | null = null;
-    listen<OCRProgress>('ocr:progress', (event) => {
-      callback(event.payload);
-    }).then((fn) => {
-      unlistenFn = fn;
-    });
-
-    return () => {
-      if (unlistenFn) {
-        unlistenFn();
-      }
-    };
+    return subscribeEvent<OCRProgress>('ocr:progress', callback);
   },
 
   onMenuCommand: (callback: (command: string) => void): (() => void) => {
-    let unlistenFn: (() => void) | null = null;
-    listen<string>('menu:command', (event) => {
-      callback(event.payload);
-    }).then((fn) => {
-      unlistenFn = fn;
-    });
-
-    return () => {
-      if (unlistenFn) {
-        unlistenFn();
-      }
-    };
+    return subscribeEvent<string>('menu:command', callback);
   },
 
   onWindowClosing: (callback: () => void): (() => void) => {
+    return subscribeEvent<void>('app:window-closing', () => callback());
+  },
+
+  onFileDrop: (callback: (paths: string[]) => void): (() => void) => {
+    let cancelled = false;
     let unlistenFn: (() => void) | null = null;
-    listen('app:window-closing', () => {
-      callback();
-    }).then((fn) => {
-      unlistenFn = fn;
-    });
+
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === 'drop' && event.payload.paths.length > 0) {
+          callback(event.payload.paths);
+        }
+      })
+      .then((fn) => {
+        if (cancelled) {
+          fn();
+        } else {
+          unlistenFn = fn;
+        }
+      });
 
     return () => {
+      cancelled = true;
       if (unlistenFn) {
         unlistenFn();
+        unlistenFn = null;
       }
     };
   },

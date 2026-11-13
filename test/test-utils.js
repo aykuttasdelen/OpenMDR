@@ -7,6 +7,7 @@ import {
   extractOutline, 
   calculateStats, 
   generateStandaloneHTML, 
+  escapeHtml,
   toggleTaskInMarkdown,
   getBasename,
   getDirname,
@@ -61,6 +62,13 @@ assert(html.includes('Merhaba Dünya'), 'HTML must include body content');
 assert(html.includes('katex.min.css'), 'HTML must include KaTeX styles');
 assert(html.includes('.callout-note'), 'HTML must include callout styles');
 assert(html.includes('.copy-code-btn'), 'HTML must include copy button print rules');
+assert.strictEqual(
+  escapeHtml('<script>"alert"&\'1\'</script>'),
+  '&lt;script&gt;&quot;alert&quot;&amp;&#39;1&#39;&lt;/script&gt;',
+  'escapeHtml must escape HTML meta-characters'
+);
+const xssHtml = generateStandaloneHTML('</title><script>alert(1)</script>', '<p>Safe</p>');
+assert(!xssHtml.includes('</title><script>alert(1)</script>'), 'generateStandaloneHTML must escape title');
 console.log('✓ generateStandaloneHTML test passed');
 
 // Test 1b: extractOutline with nested code fences
