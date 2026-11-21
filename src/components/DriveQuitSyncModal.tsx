@@ -29,12 +29,14 @@ export const DriveQuitSyncModal: React.FC<DriveQuitSyncModalProps> = ({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        onCancel();
+        if (phase !== 'syncing') {
+          onCancel();
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onCancel]);
+  }, [isOpen, phase, onCancel]);
 
   if (!isOpen) return null;
 
