@@ -385,7 +385,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <div>⚡ <strong>Mimari:</strong> Rust (Tauri v2) + React 19 + TypeScript + CodeMirror 6</div>
                 <div>🍎 <strong>Platform:</strong> macOS (Apple Silicon & Intel) Native WKWebView</div>
                 <div>👤 <strong>Geliştirici:</strong> Aykut Taşdelen</div>
-                <div>🔗 <strong>Kaynak Kod:</strong> <a href="https://github.com/aykuttasdelen/OpenMDR" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-primary)', textDecoration: 'none' }}>github.com/aykuttasdelen/OpenMDR</a></div>
+                <div>🔗 <strong>Kaynak Kod:</strong> <a href="https://github.com/aykuttasdelen/OpenMD" target="_blank" rel="noreferrer" style={{ color: 'var(--accent-primary)', textDecoration: 'none' }}>github.com/aykuttasdelen/OpenMD</a></div>
               </div>
             </div>
           )}
