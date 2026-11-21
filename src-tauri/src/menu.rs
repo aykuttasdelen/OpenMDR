@@ -107,17 +107,46 @@ pub fn build_app_menu(app: &AppHandle, is_english: bool) -> Result<Menu<Wry>, ta
     Menu::with_items(app, &[&app_menu, &file_menu, &edit_menu, &format_menu, &view_menu, &window_menu])
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuitAction {
+    CloseMainWindow,
+    ExitApp,
+}
+
+pub(crate) fn menu_quit_action(has_main_window: bool) -> QuitAction {
+    if has_main_window {
+        QuitAction::CloseMainWindow
+    } else {
+        QuitAction::ExitApp
+    }
+}
+
 pub fn handle_menu_event(app: &AppHandle, event_id: &str) {
     if event_id == "quit-app" {
-        if let Some(win) = app.get_webview_window("main") {
-            let _ = win.unminimize();
-            let _ = win.show();
-            let _ = win.set_focus();
-            let _ = win.close();
-        } else {
-            app.exit(0);
+        let main_window = app.get_webview_window("main");
+        match (menu_quit_action(main_window.is_some()), main_window) {
+            (QuitAction::CloseMainWindow, Some(win)) => {
+                let _ = win.unminimize();
+                let _ = win.show();
+                let _ = win.set_focus();
+                let _ = win.close();
+            }
+            (QuitAction::ExitApp, _) | (QuitAction::CloseMainWindow, None) => {
+                app.exit(0);
+            }
         }
         return;
     }
     let _ = app.emit("menu:command", event_id);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_menu_quit_action_handles_present_and_missing_main_window() {
+        assert_eq!(menu_quit_action(true), QuitAction::CloseMainWindow);
+        assert_eq!(menu_quit_action(false), QuitAction::ExitApp);
+    }
 }
