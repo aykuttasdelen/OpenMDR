@@ -60,9 +60,66 @@ export interface OCROptions {
   imagePlacement?: 'folderOnly' | 'pageEnd' | 'docEnd' | 'inline';
 }
 
+export type SaveSource = 'manual' | 'autosave' | 'initial';
+export type HistoryTrigger = 'initial' | 'manual' | 'autosave' | 'pre_restore';
+
+export interface HistorySettings {
+  enabled: boolean;
+  maxVersionsPerFile: number;
+  autosaveIntervalMinutes: number;
+}
+
+export interface SnapshotSummary {
+  id: number;
+  fileId: number;
+  createdAt: number;
+  trigger: HistoryTrigger;
+  sizeBytes: number;
+  compressedBytes: number;
+  lineCount: number;
+  wordCount: number;
+}
+
+export interface DeletedFileSummary {
+  fileId: number;
+  filePath: string;
+  fileName: string;
+  updatedAt: number;
+  snapshotCount: number;
+  latestSnapshotId: number;
+  latestSizeBytes: number;
+}
+
+export interface DiffLine {
+  tag: 'equal' | 'insert' | 'delete';
+  oldLineNo: number | null;
+  newLineNo: number | null;
+  content: string;
+}
+
+export interface DiffResult {
+  lines: DiffLine[];
+  addedCount: number;
+  removedCount: number;
+  unchangedCount: number;
+  truncated: boolean;
+}
+
+export interface HistoryStats {
+  totalFiles: number;
+  totalSnapshots: number;
+  dbSizeBytes: number;
+}
+
+export interface RecoverFileResult {
+  filePath: string;
+  fileName: string;
+  content: string;
+}
+
 export interface ElectronAPI {
   readFile: (filePath: string) => Promise<string>;
-  writeFile: (filePath: string, content: string) => Promise<boolean>;
+  writeFile: (filePath: string, content: string, saveSource?: SaveSource) => Promise<boolean>;
   saveImage: (baseDir: string, base64Data: string, mimeType: string) => Promise<string>;
   readImageBase64?: (filePath: string, baseDir?: string) => Promise<string>;
   openFileDialog: () => Promise<{ filePath: string; content: string; name: string } | null>;
@@ -91,6 +148,26 @@ export interface ElectronAPI {
   onMenuCommand: (callback: (command: string) => void) => () => void;
   onWindowClosing: (callback: () => void) => () => void;
   onFileDrop?: (callback: (paths: string[]) => void) => () => void;
+  historyGetSettings: () => Promise<HistorySettings>;
+  historyUpdateSettings: (settings: HistorySettings) => Promise<HistorySettings>;
+  historyListSnapshots: (filePath: string) => Promise<SnapshotSummary[]>;
+  historyListSnapshotsByFileId: (fileId: number) => Promise<SnapshotSummary[]>;
+  historyGetSnapshotContent: (snapshotId: number) => Promise<string>;
+  historyDiffSnapshot: (snapshotId: number, currentContent: string) => Promise<DiffResult>;
+  historyRestoreSnapshot: (
+    filePath: string,
+    snapshotId: number,
+    currentContent: string
+  ) => Promise<string>;
+  historyListDeletedFiles: () => Promise<DeletedFileSummary[]>;
+  historyRecoverFile: (
+    fileId: number,
+    snapshotId: number,
+    targetDir?: string | null
+  ) => Promise<RecoverFileResult>;
+  historyDeleteFileHistory: (fileId: number) => Promise<boolean>;
+  historyClearAll: () => Promise<boolean>;
+  historyGetStats: () => Promise<HistoryStats>;
 }
 
 declare global {

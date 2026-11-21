@@ -162,8 +162,8 @@ Ensure you have the following installed on macOS:
 Clone the repository and install dependencies:
 
 ```bash
-git clone https://github.com/aykuttasdelen/OpenMDR.git
-cd OpenMDR
+git clone https://github.com/aykuttasdelen/OpenMD.git
+cd OpenMD
 npm install
 ```
 

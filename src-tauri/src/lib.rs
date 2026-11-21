@@ -1,8 +1,11 @@
 pub mod commands;
+pub mod history_store;
 pub mod menu;
 pub mod models;
 
-use commands::{dialogs, export_ops, fs_ops, image_ops, ocr_ops};
+use commands::history_ops::HistoryState;
+use commands::{dialogs, export_ops, fs_ops, history_ops, image_ops, ocr_ops};
+use history_store::HistoryStore;
 use menu::{build_app_menu, handle_menu_event};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -120,6 +123,24 @@ pub fn run() {
             let menu = build_app_menu(handle, false)?;
             app.set_menu(menu)?;
 
+            let history_store = match app.path().app_local_data_dir() {
+                Ok(data_dir) => {
+                    let db_path = data_dir.join("history.db");
+                    match HistoryStore::open(db_path) {
+                        Ok(store) => Some(Arc::new(store)),
+                        Err(err) => {
+                            eprintln!("[history] Failed to open history store: {err}");
+                            None
+                        }
+                    }
+                }
+                Err(err) => {
+                    eprintln!("[history] Failed to resolve app_local_data_dir: {err}");
+                    None
+                }
+            };
+            app.manage(HistoryState(history_store));
+
             // Scope asset protocol to user document directories; opened workspaces/files are added dynamically
             let asset_scope = app.asset_protocol_scope();
             for dir in [
@@ -166,6 +187,18 @@ pub fn run() {
             dialogs::open_directory_dialog,
             export_ops::save_html,
             ocr_ops::process_pdf_ocr,
+            history_ops::history_get_settings,
+            history_ops::history_update_settings,
+            history_ops::history_list_snapshots,
+            history_ops::history_list_snapshots_by_file_id,
+            history_ops::history_get_snapshot_content,
+            history_ops::history_diff_snapshot,
+            history_ops::history_restore_snapshot,
+            history_ops::history_list_deleted_files,
+            history_ops::history_recover_file,
+            history_ops::history_delete_file_history,
+            history_ops::history_clear_all,
+            history_ops::history_get_stats,
             set_menu_language,
             get_default_documents_dir,
             toggle_maximize,
@@ -438,5 +471,206 @@ mod tests {
         .await
         .unwrap();
         assert!(data_url.starts_with("data:image/png;base64,"));
+    }
+
+    #[tokio::test]
+    async fn test_write_hook_captures_initial_baseline_then_manual_and_skips_non_utf8() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("history.db");
+        let store = Arc::new(HistoryStore::open(db_path).unwrap());
+
+        // Case A: normal pre-existing UTF-8 file with no prior snapshots
+        let existing_path = dir.path().join("existing.md");
+        let existing_str = existing_path.to_string_lossy().to_string();
+        fs::write(&existing_path, "original disk text").unwrap();
+
+        let baseline =
+            history_ops::capture_pre_write_baseline(Some(Arc::clone(&store)), &existing_path)
+                .await;
+        assert_eq!(baseline.as_deref(), Some("original disk text"));
+
+        fs::write(&existing_path, "edited text").unwrap();
+        history_ops::record_write_with_baseline(
+            Some(Arc::clone(&store)),
+            existing_str.clone(),
+            baseline,
+            "edited text".to_string(),
+            "manual".to_string(),
+        )
+        .await;
+
+        let snaps = store.list_snapshots(&existing_str).unwrap();
+        assert_eq!(snaps.len(), 2);
+        assert_eq!(snaps[0].trigger, "manual");
+        assert_eq!(
+            store.get_snapshot_content(snaps[0].id).unwrap(),
+            "edited text"
+        );
+        assert_eq!(snaps[1].trigger, "initial");
+        assert_eq!(
+            store.get_snapshot_content(snaps[1].id).unwrap(),
+            "original disk text"
+        );
+
+        // Subsequent baseline capture skips files that already have snapshots
+        let second_baseline =
+            history_ops::capture_pre_write_baseline(Some(Arc::clone(&store)), &existing_path)
+                .await;
+        assert_eq!(second_baseline, None);
+
+        // Case B: invalid UTF-8 on disk is skipped cleanly; manual snapshot still records
+        let binary_path = dir.path().join("binary.md");
+        let binary_str = binary_path.to_string_lossy().to_string();
+        fs::write(&binary_path, [0xff_u8, 0xfe, 0x00]).unwrap();
+
+        let bin_baseline =
+            history_ops::capture_pre_write_baseline(Some(Arc::clone(&store)), &binary_path).await;
+        assert_eq!(bin_baseline, None);
+
+        fs::write(&binary_path, "clean utf8 content").unwrap();
+        history_ops::record_write_with_baseline(
+            Some(Arc::clone(&store)),
+            binary_str.clone(),
+            bin_baseline,
+            "clean utf8 content".to_string(),
+            "manual".to_string(),
+        )
+        .await;
+
+        let bin_snaps = store.list_snapshots(&binary_str).unwrap();
+        assert_eq!(bin_snaps.len(), 1);
+        assert_eq!(bin_snaps[0].trigger, "manual");
+        assert_eq!(
+            store.get_snapshot_content(bin_snaps[0].id).unwrap(),
+            "clean utf8 content"
+        );
+
+        // Case C: store == None completes cleanly without panic or error
+        let none_path = dir.path().join("none_store.md");
+        fs::write(&none_path, "prior").unwrap();
+        assert_eq!(
+            history_ops::capture_pre_write_baseline(None, &none_path).await,
+            None
+        );
+        history_ops::record_write_with_baseline(
+            None,
+            none_path.to_string_lossy().to_string(),
+            Some("prior".to_string()),
+            "next".to_string(),
+            "manual".to_string(),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_write_hook_autosave_throttles_without_losing_disk_write() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("history.db");
+        let store = Arc::new(HistoryStore::open(db_path).unwrap());
+
+        store
+            .update_settings(history_store::HistorySettings {
+                enabled: true,
+                max_versions_per_file: 50,
+                autosave_interval_minutes: 5,
+            })
+            .unwrap();
+
+        let doc_path = dir.path().join("autosave_doc.md");
+        let doc_str = doc_path.to_string_lossy().to_string();
+
+        // First write without save_source defaults to "manual"
+        let first_ok = fs_ops::write_file_inner(
+            Some(Arc::clone(&store)),
+            doc_str.clone(),
+            "v1 manual".to_string(),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(first_ok);
+        assert_eq!(fs::read_to_string(&doc_path).unwrap(), "v1 manual");
+        let snaps_after_first = store.list_snapshots(&doc_str).unwrap();
+        assert_eq!(snaps_after_first.len(), 1);
+        assert_eq!(snaps_after_first[0].trigger, "manual");
+
+        // Immediate autosave must throttle snapshot creation while still writing to disk
+        let auto_ok = fs_ops::write_file_inner(
+            Some(Arc::clone(&store)),
+            doc_str.clone(),
+            "v2 autosaved".to_string(),
+            Some("autosave".to_string()),
+        )
+        .await
+        .unwrap();
+        assert!(auto_ok);
+        assert_eq!(fs::read_to_string(&doc_path).unwrap(), "v2 autosaved");
+
+        let snaps_after_auto = store.list_snapshots(&doc_str).unwrap();
+        assert_eq!(snaps_after_auto.len(), 1);
+        assert_eq!(
+            store.get_snapshot_content(snaps_after_auto[0].id).unwrap(),
+            "v1 manual"
+        );
+
+        // store == None also writes to disk cleanly
+        let no_history_path = dir.path().join("no_history.md");
+        let no_history_str = no_history_path.to_string_lossy().to_string();
+        assert!(
+            fs_ops::write_file_inner(None, no_history_str, "disk only".to_string(), None)
+                .await
+                .unwrap()
+        );
+        assert_eq!(fs::read_to_string(&no_history_path).unwrap(), "disk only");
+    }
+
+    #[tokio::test]
+    async fn test_rename_hook_updates_tracked_history() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("history.db");
+        let store = Arc::new(HistoryStore::open(db_path).unwrap());
+
+        let old_path = dir.path().join("old_name.md");
+        let new_path = dir.path().join("new_name.md");
+        let old_str = old_path.to_string_lossy().to_string();
+        let new_str = new_path.to_string_lossy().to_string();
+
+        fs_ops::write_file_inner(
+            Some(Arc::clone(&store)),
+            old_str.clone(),
+            "tracked content".to_string(),
+            Some("manual".to_string()),
+        )
+        .await
+        .unwrap();
+
+        let renamed = fs_ops::rename_file_inner(
+            Some(Arc::clone(&store)),
+            old_str.clone(),
+            new_str.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(renamed);
+        assert!(!old_path.exists());
+        assert_eq!(fs::read_to_string(&new_path).unwrap(), "tracked content");
+        assert!(store.list_snapshots(&old_str).unwrap().is_empty());
+        let moved_snaps = store.list_snapshots(&new_str).unwrap();
+        assert_eq!(moved_snaps.len(), 1);
+        assert_eq!(
+            store.get_snapshot_content(moved_snaps[0].id).unwrap(),
+            "tracked content"
+        );
+
+        // store == None renames on disk cleanly
+        let third_path = dir.path().join("third_name.md");
+        let third_str = third_path.to_string_lossy().to_string();
+        assert!(
+            fs_ops::rename_file_inner(None, new_str, third_str)
+                .await
+                .unwrap()
+        );
+        assert!(!new_path.exists());
+        assert_eq!(fs::read_to_string(&third_path).unwrap(), "tracked content");
     }
 }

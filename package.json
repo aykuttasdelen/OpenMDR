@@ -1,12 +1,12 @@
 {
   "name": "openmd",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Modern, elegant Markdown & MDX Editor for macOS (Rust + Tauri v2 Edition)",
   "repository": {
     "type": "git",
-    "url": "https://github.com/aykuttasdelen/OpenMDR.git"
+    "url": "https://github.com/aykuttasdelen/OpenMD.git"
   },
-  "homepage": "https://github.com/aykuttasdelen/OpenMDR",
+  "homepage": "https://github.com/aykuttasdelen/OpenMD",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -1,10 +1,15 @@
+use crate::commands::history_ops::{
+    capture_pre_write_baseline, record_write_with_baseline, HistoryState,
+};
+use crate::history_store::HistoryStore;
 use crate::models::FileItem;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 
-fn validate_single_component(name: &str) -> Result<(), String> {
+pub(crate) fn validate_single_component(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("İsim boş olamaz.".to_string());
     }
@@ -141,16 +146,41 @@ pub async fn read_file(app: tauri::AppHandle, file_path: String) -> Result<Strin
         .map_err(|e| format!("Dosya okunamadı: {}", e))
 }
 
-#[tauri::command]
-pub async fn write_file(
-    app: tauri::AppHandle,
+/// Writes `content` to `path`, capturing a pre-write baseline and recording a history snapshot.
+pub(crate) async fn write_path_with_history(
+    store: Option<Arc<HistoryStore>>,
+    path: &Path,
+    content: String,
+    save_source: String,
+) -> Result<(), String> {
+    let pre_existing = capture_pre_write_baseline(store.clone(), path).await;
+
+    tokio::fs::write(path, &content)
+        .await
+        .map_err(|e| format!("Dosya yazılamadı: {}", e))?;
+
+    record_write_with_baseline(
+        store,
+        path.to_string_lossy().to_string(),
+        pre_existing,
+        content,
+        save_source,
+    )
+    .await;
+
+    Ok(())
+}
+
+/// Ensures parent directories exist, writes `content` to disk, and records version history.
+pub(crate) async fn write_file_inner(
+    store: Option<Arc<HistoryStore>>,
     file_path: String,
     content: String,
+    save_source: Option<String>,
 ) -> Result<bool, String> {
     let path = Path::new(&file_path);
-    crate::commands::image_ops::register_asset_search_dir(path);
-    crate::commands::image_ops::allow_asset_dir(&app, path);
     if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
         && !parent.exists()
     {
         tokio::fs::create_dir_all(parent)
@@ -158,10 +188,23 @@ pub async fn write_file(
             .map_err(|e| format!("Dizin oluşturulamadı: {}", e))?;
     }
 
-    tokio::fs::write(&file_path, content)
-        .await
-        .map_err(|e| format!("Dosya yazılamadı: {}", e))?;
+    let source = save_source.unwrap_or_else(|| "manual".to_string());
+    write_path_with_history(store, path, content, source).await?;
     Ok(true)
+}
+
+#[tauri::command]
+pub async fn write_file(
+    app: tauri::AppHandle,
+    history: tauri::State<'_, HistoryState>,
+    file_path: String,
+    content: String,
+    save_source: Option<String>,
+) -> Result<bool, String> {
+    let path = Path::new(&file_path);
+    crate::commands::image_ops::register_asset_search_dir(path);
+    crate::commands::image_ops::allow_asset_dir(&app, path);
+    write_file_inner(history.0.clone(), file_path, content, save_source).await
 }
 
 #[tauri::command]
@@ -240,12 +283,39 @@ pub async fn create_directory(parent_path: String, dir_name: String) -> Result<S
     Ok(target_path.to_string_lossy().to_string())
 }
 
-#[tauri::command]
-pub async fn rename_file(old_path: String, new_path: String) -> Result<bool, String> {
+/// Renames a path on disk and updates any tracked version history paths best-effort.
+pub(crate) async fn rename_file_inner(
+    store: Option<Arc<HistoryStore>>,
+    old_path: String,
+    new_path: String,
+) -> Result<bool, String> {
     tokio::fs::rename(&old_path, &new_path)
         .await
         .map_err(|e| format!("Yeniden adlandırılamadı: {}", e))?;
+
+    if let Some(store) = store {
+        match tokio::task::spawn_blocking(move || store.handle_rename(&old_path, &new_path)).await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                eprintln!("[history] Failed to update history paths on rename: {err}");
+            }
+            Err(err) => {
+                eprintln!("[history] Rename history task failed: {err}");
+            }
+        }
+    }
+
     Ok(true)
+}
+
+#[tauri::command]
+pub async fn rename_file(
+    history: tauri::State<'_, HistoryState>,
+    old_path: String,
+    new_path: String,
+) -> Result<bool, String> {
+    rename_file_inner(history.0.clone(), old_path, new_path).await
 }
 
 #[tauri::command]
@@ -259,15 +329,13 @@ pub async fn delete_file(file_path: String) -> Result<bool, String> {
     Ok(true)
 }
 
-#[tauri::command]
-pub async fn get_available_path(base_dir: String, file_name: String) -> Result<String, String> {
-    validate_single_component(&file_name)?;
+pub(crate) fn resolve_available_path(base_dir: &Path, file_name: &str) -> Result<PathBuf, String> {
+    validate_single_component(file_name)?;
 
-    let base = Path::new(&base_dir);
-    let mut candidate = base.join(&file_name);
+    let mut candidate = base_dir.join(file_name);
 
     if !candidate.exists() {
-        return Ok(candidate.to_string_lossy().to_string());
+        return Ok(candidate);
     }
 
     let stem = candidate
@@ -296,15 +364,21 @@ pub async fn get_available_path(base_dir: String, file_name: String) -> Result<S
 
     let mut counter = 2;
     loop {
-        candidate = base.join(format!("{} {}{}", clean_stem, counter, ext));
+        candidate = base_dir.join(format!("{} {}{}", clean_stem, counter, ext));
         if !candidate.exists() {
-            return Ok(candidate.to_string_lossy().to_string());
+            return Ok(candidate);
         }
         counter += 1;
         if counter > 1000 {
             return Err("Uygun dosya adı bulunamadı.".to_string());
         }
     }
+}
+
+#[tauri::command]
+pub async fn get_available_path(base_dir: String, file_name: String) -> Result<String, String> {
+    let candidate = resolve_available_path(Path::new(&base_dir), &file_name)?;
+    Ok(candidate.to_string_lossy().to_string())
 }
 
 #[tauri::command]
