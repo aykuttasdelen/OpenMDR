@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use tokio::io::AsyncWriteExt;
 
-fn validate_single_component(name: &str) -> Result<(), String> {
+pub(crate) fn validate_single_component(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("İsim boş olamaz.".to_string());
     }
@@ -259,15 +259,13 @@ pub async fn delete_file(file_path: String) -> Result<bool, String> {
     Ok(true)
 }
 
-#[tauri::command]
-pub async fn get_available_path(base_dir: String, file_name: String) -> Result<String, String> {
-    validate_single_component(&file_name)?;
+pub(crate) fn resolve_available_path(base_dir: &Path, file_name: &str) -> Result<PathBuf, String> {
+    validate_single_component(file_name)?;
 
-    let base = Path::new(&base_dir);
-    let mut candidate = base.join(&file_name);
+    let mut candidate = base_dir.join(file_name);
 
     if !candidate.exists() {
-        return Ok(candidate.to_string_lossy().to_string());
+        return Ok(candidate);
     }
 
     let stem = candidate
@@ -296,15 +294,21 @@ pub async fn get_available_path(base_dir: String, file_name: String) -> Result<S
 
     let mut counter = 2;
     loop {
-        candidate = base.join(format!("{} {}{}", clean_stem, counter, ext));
+        candidate = base_dir.join(format!("{} {}{}", clean_stem, counter, ext));
         if !candidate.exists() {
-            return Ok(candidate.to_string_lossy().to_string());
+            return Ok(candidate);
         }
         counter += 1;
         if counter > 1000 {
             return Err("Uygun dosya adı bulunamadı.".to_string());
         }
     }
+}
+
+#[tauri::command]
+pub async fn get_available_path(base_dir: String, file_name: String) -> Result<String, String> {
+    let candidate = resolve_available_path(Path::new(&base_dir), &file_name)?;
+    Ok(candidate.to_string_lossy().to_string())
 }
 
 #[tauri::command]

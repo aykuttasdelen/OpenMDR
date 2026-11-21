@@ -3,7 +3,9 @@ pub mod history_store;
 pub mod menu;
 pub mod models;
 
-use commands::{dialogs, export_ops, fs_ops, image_ops, ocr_ops};
+use commands::history_ops::HistoryState;
+use commands::{dialogs, export_ops, fs_ops, history_ops, image_ops, ocr_ops};
+use history_store::HistoryStore;
 use menu::{build_app_menu, handle_menu_event};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -121,6 +123,24 @@ pub fn run() {
             let menu = build_app_menu(handle, false)?;
             app.set_menu(menu)?;
 
+            let history_store = match app.path().app_local_data_dir() {
+                Ok(data_dir) => {
+                    let db_path = data_dir.join("history.db");
+                    match HistoryStore::open(db_path) {
+                        Ok(store) => Some(Arc::new(store)),
+                        Err(err) => {
+                            eprintln!("[history] Failed to open history store: {err}");
+                            None
+                        }
+                    }
+                }
+                Err(err) => {
+                    eprintln!("[history] Failed to resolve app_local_data_dir: {err}");
+                    None
+                }
+            };
+            app.manage(HistoryState(history_store));
+
             // Scope asset protocol to user document directories; opened workspaces/files are added dynamically
             let asset_scope = app.asset_protocol_scope();
             for dir in [
@@ -167,6 +187,18 @@ pub fn run() {
             dialogs::open_directory_dialog,
             export_ops::save_html,
             ocr_ops::process_pdf_ocr,
+            history_ops::history_get_settings,
+            history_ops::history_update_settings,
+            history_ops::history_list_snapshots,
+            history_ops::history_list_snapshots_by_file_id,
+            history_ops::history_get_snapshot_content,
+            history_ops::history_diff_snapshot,
+            history_ops::history_restore_snapshot,
+            history_ops::history_list_deleted_files,
+            history_ops::history_recover_file,
+            history_ops::history_delete_file_history,
+            history_ops::history_clear_all,
+            history_ops::history_get_stats,
             set_menu_language,
             get_default_documents_dir,
             toggle_maximize,
