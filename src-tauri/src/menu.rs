@@ -1,5 +1,5 @@
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::{AppHandle, Emitter, Wry};
+use tauri::{AppHandle, Emitter, Manager, Wry};
 
 pub fn build_app_menu(app: &AppHandle, is_english: bool) -> Result<Menu<Wry>, tauri::Error> {
     let app_menu = Submenu::with_items(
@@ -17,7 +17,7 @@ pub fn build_app_menu(app: &AppHandle, is_english: bool) -> Result<Menu<Wry>, ta
             &PredefinedMenuItem::hide_others(app, Some(if is_english { "Hide Others" } else { "Diğerlerini Gizle" }))?,
             &PredefinedMenuItem::show_all(app, Some(if is_english { "Show All" } else { "Tümünü Göster" }))?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::quit(app, Some(if is_english { "Quit OpenMD" } else { "OpenMD'den Çık" }))?,
+            &MenuItem::with_id(app, "quit-app", if is_english { "Quit OpenMD" } else { "OpenMD'den Çık" }, true, Some("CmdOrCtrl+Q"))?,
         ],
     )?;
 
@@ -35,6 +35,9 @@ pub fn build_app_menu(app: &AppHandle, is_english: bool) -> Result<Menu<Wry>, ta
             &MenuItem::with_id(app, "save-file-as", if is_english { "Save As..." } else { "Farklı Kaydet..." }, true, Some("CmdOrCtrl+Shift+S"))?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, "version-history", if is_english { "Version History..." } else { "Sürüm Geçmişi..." }, true, Some("CmdOrCtrl+Shift+H"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "drive-sync-now", if is_english { "Back Up to Google Drive Now" } else { "Google Drive'a Şimdi Yedekle" }, true, None::<&str>)?,
+            &MenuItem::with_id(app, "drive-restore", if is_english { "Restore from Google Drive..." } else { "Google Drive'dan Geri Yükle..." }, true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, "ocr-pdf", if is_english { "Import PDF with OCR..." } else { "PDF'ten Metin Aktar (OCR)..." }, true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
@@ -105,5 +108,16 @@ pub fn build_app_menu(app: &AppHandle, is_english: bool) -> Result<Menu<Wry>, ta
 }
 
 pub fn handle_menu_event(app: &AppHandle, event_id: &str) {
+    if event_id == "quit-app" {
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.unminimize();
+            let _ = win.show();
+            let _ = win.set_focus();
+            let _ = win.close();
+        } else {
+            app.exit(0);
+        }
+        return;
+    }
     let _ = app.emit("menu:command", event_id);
 }

@@ -7,15 +7,26 @@ pub mod menu;
 pub mod models;
 
 use commands::history_ops::HistoryState;
-use commands::{dialogs, export_ops, fs_ops, history_ops, image_ops, ocr_ops};
+use commands::{dialogs, drive_ops, export_ops, fs_ops, history_ops, image_ops, ocr_ops};
+use drive_auth::{DriveAuthManager, KeychainTokenStore, OAuthEndpoints};
+use drive_client::DriveClient;
+use drive_sync::{DriveManager, DriveState};
 use history_store::HistoryStore;
 use menu::{build_app_menu, handle_menu_event};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::{Emitter, Manager, State, WindowEvent};
+use tauri::{Emitter, Manager, RunEvent, State, WindowEvent};
 
 pub struct AppState {
     pub force_close: Arc<AtomicBool>,
+    pub skip_exit_flush: Arc<AtomicBool>,
+}
+
+fn normalize_compile_env(value: Option<&'static str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 #[tauri::command]
@@ -30,11 +41,13 @@ fn set_menu_language(app: tauri::AppHandle, lang: String) -> Result<(), String> 
 fn close_window(
     window: tauri::Window,
     state: State<AppState>,
+    app: tauri::AppHandle,
     force: Option<bool>,
 ) -> Result<(), String> {
     if force.unwrap_or(false) {
         state.force_close.store(true, Ordering::SeqCst);
-        let _ = window.close();
+        state.skip_exit_flush.store(true, Ordering::SeqCst);
+        app.exit(0);
     } else {
         let _ = window.emit("app:window-closing", ());
     }
@@ -106,6 +119,7 @@ fn set_window_theme(
 #[tauri::command]
 fn cancel_close(state: State<AppState>) -> Result<(), String> {
     state.force_close.store(false, Ordering::SeqCst);
+    state.skip_exit_flush.store(false, Ordering::SeqCst);
     Ok(())
 }
 
@@ -113,10 +127,12 @@ fn cancel_close(state: State<AppState>) -> Result<(), String> {
 pub fn run() {
     let force_close = Arc::new(AtomicBool::new(false));
     let force_close_clone = Arc::clone(&force_close);
+    let skip_exit_flush = Arc::new(AtomicBool::new(false));
 
     tauri::Builder::default()
         .manage(AppState {
             force_close: Arc::clone(&force_close),
+            skip_exit_flush,
         })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
@@ -142,7 +158,51 @@ pub fn run() {
                     None
                 }
             };
+
+            let drive_manager = match history_store {
+                Some(ref store) => match reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(60))
+                    .build()
+                {
+                    Ok(http) => {
+                        let built_in_client_id =
+                            normalize_compile_env(option_env!("OPENMD_GOOGLE_CLIENT_ID"));
+                        let built_in_client_secret =
+                            normalize_compile_env(option_env!("OPENMD_GOOGLE_CLIENT_SECRET"));
+                        let auth = Arc::new(
+                            DriveAuthManager::new(
+                                Arc::clone(store),
+                                Arc::new(KeychainTokenStore),
+                                http.clone(),
+                                OAuthEndpoints::default(),
+                            )
+                            .with_built_in_credentials(
+                                built_in_client_id,
+                                built_in_client_secret,
+                            ),
+                        );
+                        let client = DriveClient::new(http);
+                        let home_dir = app.path().home_dir().ok();
+                        let manager =
+                            DriveManager::new(Arc::clone(store), auth, client, home_dir);
+                        manager.set_app_handle(handle.clone());
+                        {
+                            let rt_handle = tauri::async_runtime::handle();
+                            let _rt_guard = rt_handle.inner().enter();
+                            manager.spawn_background_worker();
+                        }
+                        Some(manager)
+                    }
+                    Err(err) => {
+                        eprintln!("[drive] Failed to build HTTP client: {err}");
+                        None
+                    }
+                },
+                None => None,
+            };
+
             app.manage(HistoryState(history_store));
+            app.manage(DriveState(drive_manager));
 
             // Scope asset protocol to user document directories; opened workspaces/files are added dynamically
             let asset_scope = app.asset_protocol_scope();
@@ -202,6 +262,19 @@ pub fn run() {
             history_ops::history_delete_file_history,
             history_ops::history_clear_all,
             history_ops::history_get_stats,
+            drive_ops::drive_get_status,
+            drive_ops::drive_update_settings,
+            drive_ops::drive_save_custom_oauth,
+            drive_ops::drive_clear_custom_oauth,
+            drive_ops::drive_connect,
+            drive_ops::drive_cancel_auth,
+            drive_ops::drive_disconnect,
+            drive_ops::drive_sync_now,
+            drive_ops::drive_flush_before_quit,
+            drive_ops::drive_list_remote_files,
+            drive_ops::drive_download_file_content,
+            drive_ops::drive_restore_file,
+            drive_ops::drive_restore_all,
             set_menu_language,
             get_default_documents_dir,
             toggle_maximize,
@@ -209,8 +282,34 @@ pub fn run() {
             close_window,
             cancel_close,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| match event {
+            RunEvent::ExitRequested { api, .. } => {
+                let force_close = app
+                    .try_state::<AppState>()
+                    .is_some_and(|s| s.force_close.load(Ordering::SeqCst));
+                if !force_close && let Some(win) = app.get_webview_window("main") {
+                    api.prevent_exit();
+                    let _ = win.unminimize();
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                    let _ = win.emit("app:window-closing", ());
+                }
+            }
+            RunEvent::Exit => {
+                let skip_flush = app
+                    .try_state::<AppState>()
+                    .is_some_and(|s| s.skip_exit_flush.load(Ordering::SeqCst));
+                if !skip_flush
+                    && let Some(drive_state) = app.try_state::<DriveState>()
+                    && let Some(manager) = drive_state.0.as_ref()
+                {
+                    manager.blocking_flush_on_terminate(std::time::Duration::from_secs(3));
+                }
+            }
+            _ => {}
+        });
 }
 
 #[cfg(test)]
