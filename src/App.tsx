@@ -9,9 +9,11 @@ import { StatusBar } from './components/StatusBar';
 import { CommandPalette, CommandItem } from './components/CommandPalette';
 import { ExportModal } from './components/ExportModal';
 import { OCRModal } from './components/OCRModal';
-import { SettingsModal } from './components/SettingsModal';
+import { SettingsModal, TabType as SettingsTabType } from './components/SettingsModal';
 import { UnsavedChangesModal } from './components/UnsavedChangesModal';
 import { HistoryModal } from './components/HistoryModal';
+import { DriveRestoreModal } from './components/DriveRestoreModal';
+import { DriveQuitSyncModal } from './components/DriveQuitSyncModal';
 import {
   Tab,
   FileItem,
@@ -19,8 +21,13 @@ import {
   ThemeMode,
   HistorySettings,
   HistoryStats,
-  RecoverFileResult
+  RecoverFileResult,
+  DriveStatus,
+  DriveSettings,
+  DriveRestoreResult,
+  DriveBatchRestoreResult
 } from './types/electron';
+import { mapDriveErrorCode } from './utils/driveUtils';
 import { DEFAULT_WELCOME_MARKDOWN } from './utils/defaultDocument';
 import { useTranslation } from './i18n/LanguageContext';
 import { 
@@ -56,7 +63,10 @@ import {
   X,
   XCircle,
   ScanText,
-  History
+  History,
+  Cloud,
+  CloudUpload,
+  FolderDown
 } from 'lucide-react';
 
 function createTabId(): string {
@@ -79,6 +89,26 @@ function isPathInsideDir(filePath: string, dirPath: string): boolean {
   }
   return filePath.startsWith(`${dirPath}/`) || filePath.startsWith(`${dirPath}\\`);
 }
+
+function extractOpenFilePaths(tabs: Tab[]): string[] {
+  return tabs
+    .map(t => t.filePath)
+    .filter((p): p is string => Boolean(p));
+}
+
+interface DriveQuitModalState {
+  isOpen: boolean;
+  pendingCount: number;
+  phase: 'syncing' | 'timeout' | 'error';
+  errorMessage: string | null;
+}
+
+const INITIAL_DRIVE_QUIT_MODAL_STATE: DriveQuitModalState = {
+  isOpen: false,
+  pendingCount: 0,
+  phase: 'syncing',
+  errorMessage: null,
+};
 
 const STORAGE_KEYS = {
   THEME: 'openmd-theme',
@@ -143,12 +173,22 @@ export const App: React.FC = () => {
   const [ocrModalOpen, setOcrModalOpen] = useState(false);
   const [ocrInitialPdfPath, setOcrInitialPdfPath] = useState<string | null>(null);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTabType>('general');
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [historyModalInitialTab, setHistoryModalInitialTab] = useState<'current' | 'deleted'>('current');
   const [historySettings, setHistorySettings] = useState<HistorySettings>(DEFAULT_HISTORY_SETTINGS);
   const [historyStats, setHistoryStats] = useState<HistoryStats | null>(null);
+  const [driveStatus, setDriveStatus] = useState<DriveStatus | null>(null);
+  const [driveRestoreModalOpen, setDriveRestoreModalOpen] = useState(false);
+  const [driveQuitModalState, setDriveQuitModalState] = useState<DriveQuitModalState>(
+    INITIAL_DRIVE_QUIT_MODAL_STATE
+  );
   const [unsavedModalOpen, setUnsavedModalOpen] = useState(false);
   const [pendingCloseAction, setPendingCloseAction] = useState<'window' | 'workspace' | null>(null);
+
+  const isDriveAvailable = Boolean(
+    typeof window !== 'undefined' && window.electronAPI?.driveGetStatus
+  );
 
   // Settings & Storage Options
   const [defaultSavePath, setDefaultSavePath] = useState<string | null>(() => {
@@ -198,6 +238,33 @@ export const App: React.FC = () => {
   const [cursorPos, setCursorPos] = useState({ line: 1, col: 1 });
   const editorRef = useRef<EditorHandle>(null);
   const previewScrollRef = useRef<HTMLDivElement>(null);
+
+  const openFilePaths = useMemo(() => extractOpenFilePaths(tabs), [tabs]);
+
+  const isMountedRef = useRef(true);
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const openFilePathsRef = useRef(openFilePaths);
+  openFilePathsRef.current = openFilePaths;
+  const rootFolderPathRef = useRef(rootFolderPath);
+  rootFolderPathRef.current = rootFolderPath;
+  const settingsModalOpenRef = useRef(settingsModalOpen);
+  settingsModalOpenRef.current = settingsModalOpen;
+  const driveStatusRef = useRef(driveStatus);
+  driveStatusRef.current = driveStatus;
+  const driveQuitModalStateRef = useRef(driveQuitModalState);
+  driveQuitModalStateRef.current = driveQuitModalState;
+  const quitFlushInFlightRef = useRef(false);
+  const quitFlushSessionRef = useRef(0);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      quitFlushSessionRef.current += 1;
+      quitFlushInFlightRef.current = false;
+    };
+  }, []);
 
   // Active tab helper
   const activeTab = useMemo(() => {
@@ -390,6 +457,316 @@ export const App: React.FC = () => {
     await api.historyClearAll();
     await refreshHistoryStats();
   }, [refreshHistoryStats]);
+
+  const openSettingsModal = useCallback((initialTab: SettingsTabType = 'general') => {
+    setSettingsInitialTab(initialTab);
+    setSettingsModalOpen(true);
+  }, []);
+
+  // Load Google Drive status & subscribe to live status changes (desktop only)
+  useEffect(() => {
+    if (!isDriveAvailable) {
+      setDriveStatus(null);
+      return;
+    }
+
+    const api = window.electronAPI;
+    if (!api?.driveGetStatus) return;
+
+    let cancelled = false;
+    let receivedStatusEvent = false;
+    const unlisten = api.onDriveStatusChanged?.((nextStatus) => {
+      if (cancelled) return;
+      receivedStatusEvent = true;
+      setDriveStatus(nextStatus);
+      setDriveQuitModalState(prev => {
+        if (prev.isOpen && prev.phase === 'syncing' && nextStatus.pendingCount > 0) {
+          return { ...prev, pendingCount: nextStatus.pendingCount };
+        }
+        return prev;
+      });
+    });
+
+    api.driveGetStatus()
+      .then((status) => {
+        if (!cancelled && !receivedStatusEvent) {
+          setDriveStatus(status);
+        }
+      })
+      .catch((err) => {
+        console.warn('Failed to fetch Google Drive status:', err);
+      });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      setDriveStatus(null);
+    };
+  }, [isDriveAvailable]);
+
+  // Refresh Google Drive status whenever SettingsModal opens
+  useEffect(() => {
+    if (!settingsModalOpen || !isDriveAvailable) return;
+    const api = window.electronAPI;
+    if (!api?.driveGetStatus) return;
+
+    let cancelled = false;
+    api.driveGetStatus()
+      .then((status) => {
+        if (!cancelled) {
+          setDriveStatus(status);
+        }
+      })
+      .catch((err) => {
+        console.warn('Failed to refresh Google Drive status:', err);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [settingsModalOpen, isDriveAvailable]);
+
+  const refreshDriveStatusAfterAuthConfig = useCallback(async (authConfig: DriveStatus['authConfig']) => {
+    const api = window.electronAPI;
+    if (api?.driveGetStatus) {
+      try {
+        const nextStatus = await api.driveGetStatus();
+        if (isMountedRef.current) {
+          setDriveStatus(nextStatus);
+        }
+        return;
+      } catch {
+        // Fallback to patching authConfig below if driveGetStatus fails
+      }
+    }
+    if (isMountedRef.current) {
+      setDriveStatus(prev => (prev ? { ...prev, authConfig } : prev));
+    }
+  }, []);
+
+  const handleDriveConnect = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!isDriveAvailable || !api?.driveConnect) return;
+    const nextStatus = await api.driveConnect(
+      rootFolderPathRef.current ?? null,
+      openFilePathsRef.current
+    );
+    if (isMountedRef.current) {
+      setDriveStatus(nextStatus);
+    }
+  }, [isDriveAvailable]);
+
+  const handleDriveCancelAuth = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!isDriveAvailable || !api?.driveCancelAuth) return;
+    await api.driveCancelAuth();
+  }, [isDriveAvailable]);
+
+  const handleDriveDisconnect = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!isDriveAvailable || !api?.driveDisconnect) return;
+    const nextStatus = await api.driveDisconnect();
+    if (isMountedRef.current) {
+      setDriveStatus(nextStatus);
+    }
+  }, [isDriveAvailable]);
+
+  const handleDriveSyncNow = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!isDriveAvailable || !api?.driveSyncNow) return;
+    const nextStatus = await api.driveSyncNow(
+      rootFolderPathRef.current ?? null,
+      openFilePathsRef.current
+    );
+    if (isMountedRef.current) {
+      setDriveStatus(nextStatus);
+    }
+  }, [isDriveAvailable]);
+
+  const handleDriveUpdateSettings = useCallback(async (settings: DriveSettings) => {
+    const api = window.electronAPI;
+    if (!isDriveAvailable || !api?.driveUpdateSettings) return;
+    const nextStatus = await api.driveUpdateSettings(settings);
+    if (isMountedRef.current) {
+      setDriveStatus(nextStatus);
+    }
+  }, [isDriveAvailable]);
+
+  const handleDriveSaveCustomOAuth = useCallback(async (clientId: string, clientSecret: string | null) => {
+    const api = window.electronAPI;
+    if (!isDriveAvailable || !api?.driveSaveCustomOAuth) return;
+    const authConfig = await api.driveSaveCustomOAuth(clientId, clientSecret);
+    await refreshDriveStatusAfterAuthConfig(authConfig);
+  }, [isDriveAvailable, refreshDriveStatusAfterAuthConfig]);
+
+  const handleDriveClearCustomOAuth = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!isDriveAvailable || !api?.driveClearCustomOAuth) return;
+    const authConfig = await api.driveClearCustomOAuth();
+    await refreshDriveStatusAfterAuthConfig(authConfig);
+  }, [isDriveAvailable, refreshDriveStatusAfterAuthConfig]);
+
+  const handleOpenDriveRestoreFromSettings = useCallback(() => {
+    setSettingsModalOpen(false);
+    if (isDriveAvailable) {
+      setDriveRestoreModalOpen(true);
+    }
+  }, [isDriveAvailable]);
+
+  const resolveDriveStatusForCommand = useCallback(async (): Promise<DriveStatus | null> => {
+    if (!isDriveAvailable) return null;
+    if (driveStatusRef.current) return driveStatusRef.current;
+    const api = window.electronAPI;
+    if (!api?.driveGetStatus) return null;
+    try {
+      const status = await api.driveGetStatus();
+      if (isMountedRef.current) {
+        setDriveStatus(status);
+      }
+      return status;
+    } catch {
+      return null;
+    }
+  }, [isDriveAvailable]);
+
+  const triggerDriveSyncNow = useCallback(async () => {
+    if (!isDriveAvailable) return;
+    const status = await resolveDriveStatusForCommand();
+    if (!status?.connected || status.state === 'auth_required') {
+      openSettingsModal('cloud');
+      return;
+    }
+    try {
+      await handleDriveSyncNow();
+    } catch (err) {
+      alert(mapDriveErrorCode(err, t) || t('status.driveError'));
+    }
+  }, [isDriveAvailable, resolveDriveStatusForCommand, openSettingsModal, handleDriveSyncNow, t]);
+
+  const triggerDriveRestore = useCallback(async () => {
+    if (!isDriveAvailable) return;
+    const status = await resolveDriveStatusForCommand();
+    if (!status?.connected || status.state === 'auth_required') {
+      openSettingsModal('cloud');
+      return;
+    }
+    setDriveRestoreModalOpen(true);
+  }, [isDriveAvailable, resolveDriveStatusForCommand, openSettingsModal]);
+
+  const runQuitFlush = useCallback(async () => {
+    if (quitFlushInFlightRef.current) return;
+    const api = window.electronAPI;
+    if (!api) return;
+
+    if (!isDriveAvailable || !api.driveGetStatus || !api.driveFlushBeforeQuit) {
+      await api.closeWindow?.(true);
+      return;
+    }
+
+    const session = ++quitFlushSessionRef.current;
+    quitFlushInFlightRef.current = true;
+
+    if (driveQuitModalStateRef.current.isOpen) {
+      setDriveQuitModalState(prev => ({
+        ...prev,
+        phase: 'syncing',
+        errorMessage: null,
+      }));
+    }
+
+    let status: DriveStatus;
+    try {
+      status = await api.driveGetStatus();
+    } catch (err) {
+      console.warn('Failed to inspect Google Drive status before quit, closing fail-open:', err);
+      if (!isMountedRef.current || session !== quitFlushSessionRef.current) {
+        return;
+      }
+      quitFlushInFlightRef.current = false;
+      setDriveQuitModalState(prev => ({ ...prev, isOpen: false }));
+      await api.closeWindow?.(true);
+      return;
+    }
+
+    if (!isMountedRef.current || session !== quitFlushSessionRef.current) {
+      return;
+    }
+
+    setDriveStatus(status);
+
+    const shouldFlushBeforeQuit =
+      status.connected &&
+      status.settings.enabled &&
+      status.state !== 'auth_required' &&
+      status.pendingCount > 0;
+
+    if (!shouldFlushBeforeQuit) {
+      quitFlushInFlightRef.current = false;
+      setDriveQuitModalState(prev => ({ ...prev, isOpen: false }));
+      await api.closeWindow?.(true);
+      return;
+    }
+
+    setDriveQuitModalState({
+      isOpen: true,
+      pendingCount: status.pendingCount,
+      phase: 'syncing',
+      errorMessage: null,
+    });
+
+    try {
+      const result = await api.driveFlushBeforeQuit(10000);
+      if (!isMountedRef.current || session !== quitFlushSessionRef.current) {
+        return;
+      }
+
+      if (result.completed && result.remainingCount === 0) {
+        quitFlushInFlightRef.current = false;
+        setDriveQuitModalState(prev => ({ ...prev, isOpen: false }));
+        await api.closeWindow?.(true);
+        return;
+      }
+
+      quitFlushInFlightRef.current = false;
+      setDriveQuitModalState({
+        isOpen: true,
+        pendingCount: result.remainingCount,
+        phase: result.timedOut ? 'timeout' : 'error',
+        errorMessage: result.error,
+      });
+    } catch (err) {
+      if (!isMountedRef.current || session !== quitFlushSessionRef.current) {
+        return;
+      }
+      quitFlushInFlightRef.current = false;
+      setDriveQuitModalState({
+        isOpen: true,
+        pendingCount: status.pendingCount,
+        phase: 'error',
+        errorMessage: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }, [isDriveAvailable]);
+
+  const proceedWithWindowClose = runQuitFlush;
+
+  const handleQuitSkipAndClose = useCallback(() => {
+    quitFlushSessionRef.current += 1;
+    quitFlushInFlightRef.current = false;
+    setDriveQuitModalState(prev => ({ ...prev, isOpen: false }));
+    void window.electronAPI?.closeWindow?.(true);
+  }, []);
+
+  const handleQuitRetry = useCallback(() => {
+    void runQuitFlush();
+  }, [runQuitFlush]);
+
+  const handleQuitCancel = useCallback(() => {
+    quitFlushSessionRef.current += 1;
+    quitFlushInFlightRef.current = false;
+    setDriveQuitModalState(prev => ({ ...prev, isOpen: false }));
+    void window.electronAPI?.cancelClose?.();
+  }, []);
 
   // Content change handler with docId support
   const handleContentChange = useCallback((newContent: string, docId?: string) => {
@@ -602,7 +979,7 @@ export const App: React.FC = () => {
     void refreshHistoryStats();
   }, [refreshHistoryStats]);
 
-  const handleHistoryOpenCopy = useCallback((title: string, content: string) => {
+  const handleOpenContentInNewTab = useCallback((title: string, content: string) => {
     const newTab: Tab = {
       id: createTabId(),
       title,
@@ -616,8 +993,12 @@ export const App: React.FC = () => {
     setTimeout(() => editorRef.current?.focus(), 60);
   }, []);
 
-  const handleHistoryRecovered = useCallback((result: RecoverFileResult) => {
-    const existing = tabs.find(t => t.filePath === result.filePath);
+  const openOrUpdateRestoredTab = useCallback((result: {
+    filePath: string;
+    fileName: string;
+    content: string;
+  }) => {
+    const existing = tabsRef.current.find(t => t.filePath === result.filePath);
     if (existing) {
       setTabs(prev => prev.map(t => (
         t.filePath === result.filePath
@@ -637,10 +1018,32 @@ export const App: React.FC = () => {
     }
 
     if (rootFolderPath && isPathInsideDir(result.filePath, rootFolderPath)) {
-      handleRefreshTree().catch(err => console.warn('Failed to refresh tree after recovery:', err));
+      handleRefreshTree().catch(err => console.warn('Failed to refresh tree after restore:', err));
     }
+  }, [openFileInTab, rootFolderPath, handleRefreshTree]);
+
+  const handleHistoryRecovered = useCallback((result: RecoverFileResult) => {
+    openOrUpdateRestoredTab(result);
     void refreshHistoryStats();
-  }, [tabs, openFileInTab, rootFolderPath, handleRefreshTree, refreshHistoryStats]);
+  }, [openOrUpdateRestoredTab, refreshHistoryStats]);
+
+  const handleDriveRestoredToDisk = useCallback((result: DriveRestoreResult) => {
+    openOrUpdateRestoredTab(result);
+  }, [openOrUpdateRestoredTab]);
+
+  const handleDriveBatchRestored = useCallback((result: DriveBatchRestoreResult) => {
+    if (
+      result.restoredCount > 0 &&
+      rootFolderPath &&
+      (result.targetDir === rootFolderPath ||
+        isPathInsideDir(result.targetDir, rootFolderPath) ||
+        isPathInsideDir(rootFolderPath, result.targetDir))
+    ) {
+      handleRefreshTree().catch(err =>
+        console.warn('Failed to refresh tree after batch Drive restore:', err)
+      );
+    }
+  }, [rootFolderPath, handleRefreshTree]);
 
   const handleOCRComplete = useCallback(async (
     markdown: string,
@@ -923,24 +1326,27 @@ export const App: React.FC = () => {
       }
     }
 
+    const action = pendingCloseAction;
     setUnsavedModalOpen(false);
+    setPendingCloseAction(null);
 
-    if (pendingCloseAction === 'window') {
-      window.electronAPI.closeWindow(true);
-    } else if (pendingCloseAction === 'workspace') {
+    if (action === 'window') {
+      await proceedWithWindowClose();
+    } else if (action === 'workspace') {
       performCloseWorkspace();
     }
-    setPendingCloseAction(null);
   };
 
   const handleDiscardAndClose = () => {
+    const action = pendingCloseAction;
     setUnsavedModalOpen(false);
-    if (pendingCloseAction === 'window') {
-      window.electronAPI?.closeWindow(true);
-    } else if (pendingCloseAction === 'workspace') {
+    setPendingCloseAction(null);
+
+    if (action === 'window') {
+      void proceedWithWindowClose();
+    } else if (action === 'workspace') {
       performCloseWorkspace();
     }
-    setPendingCloseAction(null);
   };
 
   const handleCancelUnsavedModal = () => {
@@ -1111,22 +1517,23 @@ export const App: React.FC = () => {
   const handleZoomOut = () => setFontSize(prev => Math.max(11, prev - 1));
   const handleResetZoom = () => setFontSize(14);
 
-  // App Close Interception (Task 2)
+  // App Close Interception (Task 2 + Google Drive 2-Stage Quit Flush)
   useEffect(() => {
     if (!window.electronAPI) return;
 
     const cleanup = window.electronAPI.onWindowClosing(() => {
-      const hasUnsaved = tabs.some(t => t.isModified);
+      if (quitFlushInFlightRef.current) return;
+      const hasUnsaved = tabsRef.current.some(t => t.isModified);
       if (hasUnsaved) {
         setPendingCloseAction('window');
         setUnsavedModalOpen(true);
       } else {
-        window.electronAPI?.closeWindow(true);
+        void proceedWithWindowClose();
       }
     });
 
     return cleanup;
-  }, [tabs]);
+  }, [proceedWithWindowClose]);
 
   // Web fallback beforeunload warning
   useEffect(() => {
@@ -1150,7 +1557,11 @@ export const App: React.FC = () => {
       // Settings shortcut Cmd+,
       if (isCmd && e.key === ',') {
         e.preventDefault();
-        setSettingsModalOpen(prev => !prev);
+        if (settingsModalOpenRef.current) {
+          setSettingsModalOpen(false);
+        } else {
+          openSettingsModal('general');
+        }
         return;
       }
 
@@ -1234,7 +1645,8 @@ export const App: React.FC = () => {
     handleSaveFile, 
     handleCloseTab,
     handleInsertFormat,
-    openHistoryModal
+    openHistoryModal,
+    openSettingsModal
   ]);
 
   // Electron Native Menu Command Dispatcher
@@ -1250,13 +1662,23 @@ export const App: React.FC = () => {
         case 'save-file': handleSaveFile(false); break;
         case 'save-file-as': handleSaveFile(true); break;
         case 'version-history': openHistoryModal('current'); break;
+        case 'drive-sync-now':
+          if (isDriveAvailable) {
+            void triggerDriveSyncNow();
+          }
+          break;
+        case 'drive-restore':
+          if (isDriveAvailable) {
+            void triggerDriveRestore();
+          }
+          break;
         case 'close-tab': handleCloseTab(activeTabId); break;
         case 'toggle-sidebar': setSidebarOpen(prev => !prev); break;
         case 'view-editor': setViewMode('editor'); break;
         case 'view-split': setViewMode('split'); break;
         case 'view-preview': setViewMode('preview'); break;
         case 'command-palette': setCommandPaletteOpen(true); break;
-        case 'open-settings': setSettingsModalOpen(true); break;
+        case 'open-settings': openSettingsModal('general'); break;
         case 'export-html': setExportModalOpen(true); break;
         case 'export-pdf': setExportModalOpen(true); break;
         case 'ocr-pdf':
@@ -1282,7 +1704,11 @@ export const App: React.FC = () => {
     handleSaveFile, 
     handleCloseTab,
     handleInsertFormat,
-    openHistoryModal
+    openHistoryModal,
+    openSettingsModal,
+    isDriveAvailable,
+    triggerDriveSyncNow,
+    triggerDriveRestore
   ]);
 
   // Drag and Drop File & Folder Support
@@ -1518,12 +1944,36 @@ export const App: React.FC = () => {
       icon: <RotateCcw size={16} />,
       action: () => openHistoryModal('deleted')
     },
+    ...(isDriveAvailable ? [
+      {
+        id: 'cmd-drive-sync-now',
+        title: t('command.driveSyncNow'),
+        icon: <CloudUpload size={16} />,
+        action: () => {
+          void triggerDriveSyncNow();
+        }
+      },
+      {
+        id: 'cmd-drive-restore',
+        title: t('command.driveRestore'),
+        icon: <FolderDown size={16} />,
+        action: () => {
+          void triggerDriveRestore();
+        }
+      },
+      {
+        id: 'cmd-drive-settings',
+        title: t('command.driveSettings'),
+        icon: <Cloud size={16} />,
+        action: () => openSettingsModal('cloud')
+      }
+    ] : []),
     {
       id: 'cmd-settings',
       title: t('command.settings'),
       shortcut: 'Cmd+,',
       icon: <SettingsIcon size={16} />,
-      action: () => setSettingsModalOpen(true)
+      action: () => openSettingsModal('general')
     },
     {
       id: 'cmd-export',
@@ -1620,7 +2070,11 @@ export const App: React.FC = () => {
     autoSaveEnabled, 
     activeTab, 
     theme,
-    openHistoryModal
+    openHistoryModal,
+    openSettingsModal,
+    isDriveAvailable,
+    triggerDriveSyncNow,
+    triggerDriveRestore
   ]);
 
   return (
@@ -1645,7 +2099,7 @@ export const App: React.FC = () => {
         }}
         onOpenHistory={() => openHistoryModal('current')}
         onOpenCommandPalette={() => setCommandPaletteOpen(true)}
-        onOpenSettings={() => setSettingsModalOpen(true)}
+        onOpenSettings={() => openSettingsModal('general')}
       />
 
       {/* Main Workspace */}
@@ -1817,6 +2271,8 @@ export const App: React.FC = () => {
             onZoomIn={handleZoomIn}
             onZoomOut={handleZoomOut}
             onResetZoom={handleResetZoom}
+            driveStatus={isDriveAvailable ? driveStatus : null}
+            onOpenDriveSettings={isDriveAvailable ? () => openSettingsModal('cloud') : undefined}
           />
         </div>
       </div>
@@ -1850,6 +2306,7 @@ export const App: React.FC = () => {
       {/* Settings Modal (Task 4) */}
       <SettingsModal
         isOpen={settingsModalOpen}
+        initialTab={settingsInitialTab}
         onClose={() => setSettingsModalOpen(false)}
         theme={theme}
         onThemeChange={setTheme}
@@ -1869,6 +2326,15 @@ export const App: React.FC = () => {
         historyStats={historyStats}
         onUpdateHistorySettings={typeof window !== 'undefined' && window.electronAPI?.historyUpdateSettings ? handleUpdateHistorySettings : undefined}
         onClearAllHistory={typeof window !== 'undefined' && window.electronAPI?.historyClearAll ? handleClearAllHistory : undefined}
+        driveStatus={isDriveAvailable ? driveStatus : null}
+        onDriveConnect={isDriveAvailable ? handleDriveConnect : undefined}
+        onDriveCancelAuth={isDriveAvailable ? handleDriveCancelAuth : undefined}
+        onDriveDisconnect={isDriveAvailable ? handleDriveDisconnect : undefined}
+        onDriveSyncNow={isDriveAvailable ? handleDriveSyncNow : undefined}
+        onDriveUpdateSettings={isDriveAvailable ? handleDriveUpdateSettings : undefined}
+        onDriveSaveCustomOAuth={isDriveAvailable ? handleDriveSaveCustomOAuth : undefined}
+        onDriveClearCustomOAuth={isDriveAvailable ? handleDriveClearCustomOAuth : undefined}
+        onOpenDriveRestore={isDriveAvailable ? handleOpenDriveRestoreFromSettings : undefined}
       />
 
       {/* Version History Modal */}
@@ -1880,9 +2346,31 @@ export const App: React.FC = () => {
         activeContent={activeTab ? activeTab.content : ''}
         onClose={() => setHistoryModalOpen(false)}
         onRestored={handleHistoryRestored}
-        onOpenCopy={handleHistoryOpenCopy}
+        onOpenCopy={handleOpenContentInNewTab}
         onRecovered={handleHistoryRecovered}
       />
+
+      {isDriveAvailable && (
+        <>
+          <DriveRestoreModal
+            isOpen={driveRestoreModalOpen}
+            onClose={() => setDriveRestoreModalOpen(false)}
+            onOpenInNewTab={handleOpenContentInNewTab}
+            onRestoredToDisk={handleDriveRestoredToDisk}
+            onBatchRestored={handleDriveBatchRestored}
+          />
+
+          <DriveQuitSyncModal
+            isOpen={driveQuitModalState.isOpen}
+            pendingCount={driveQuitModalState.pendingCount}
+            phase={driveQuitModalState.phase}
+            errorMessage={driveQuitModalState.errorMessage}
+            onSkipAndClose={handleQuitSkipAndClose}
+            onRetry={handleQuitRetry}
+            onCancel={handleQuitCancel}
+          />
+        </>
+      )}
 
       {/* Unsaved Workspace / Window Changes Modal (Task 2) */}
       <UnsavedChangesModal
