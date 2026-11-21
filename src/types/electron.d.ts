@@ -117,6 +117,72 @@ export interface RecoverFileResult {
   content: string;
 }
 
+export type DriveSyncState =
+  | 'disconnected'
+  | 'paused'
+  | 'idle'
+  | 'syncing'
+  | 'pending'
+  | 'offline'
+  | 'auth_required'
+  | 'error';
+
+export interface DriveSettings {
+  enabled: boolean;
+  syncIntervalMinutes: number;
+  idleDelaySeconds: number;
+}
+
+export interface DriveAuthConfig {
+  hasBuiltInClient: boolean;
+  usingCustomClient: boolean;
+  customClientId: string;
+  hasCustomClientSecret: boolean;
+}
+
+export interface DriveStatus {
+  state: DriveSyncState;
+  connected: boolean;
+  accountEmail: string | null;
+  rootFolderId: string | null;
+  settings: DriveSettings;
+  pendingCount: number;
+  syncedCount: number;
+  lastSyncAt: number | null;
+  lastError: string | null;
+  authInProgress: boolean;
+  authConfig: DriveAuthConfig;
+}
+
+export interface DriveRemoteFile {
+  fileId: string;
+  name: string;
+  remotePath: string;
+  sizeBytes: number;
+  modifiedTimeMs: number | null;
+}
+
+export interface DriveRestoreResult {
+  filePath: string;
+  fileName: string;
+  content: string;
+}
+
+export interface DriveBatchRestoreResult {
+  restoredCount: number;
+  skippedCount: number;
+  failedFiles: string[];
+  targetDir: string;
+}
+
+export interface DriveFlushResult {
+  completed: boolean;
+  uploadedCount: number;
+  remainingCount: number;
+  timedOut: boolean;
+  error: string | null;
+}
+
 export interface ElectronAPI {
   readFile: (filePath: string) => Promise<string>;
   writeFile: (filePath: string, content: string, saveSource?: SaveSource) => Promise<boolean>;
@@ -168,6 +234,25 @@ export interface ElectronAPI {
   historyDeleteFileHistory: (fileId: number) => Promise<boolean>;
   historyClearAll: () => Promise<boolean>;
   historyGetStats: () => Promise<HistoryStats>;
+  driveGetStatus?: () => Promise<DriveStatus>;
+  driveUpdateSettings?: (settings: DriveSettings) => Promise<DriveStatus>;
+  driveSaveCustomOAuth?: (clientId: string, clientSecret?: string | null) => Promise<DriveAuthConfig>;
+  driveClearCustomOAuth?: () => Promise<DriveAuthConfig>;
+  driveConnect?: (workspaceDir?: string | null, openFilePaths?: string[] | null) => Promise<DriveStatus>;
+  driveCancelAuth?: () => Promise<boolean>;
+  driveDisconnect?: () => Promise<DriveStatus>;
+  driveSyncNow?: (workspaceDir?: string | null, openFilePaths?: string[] | null) => Promise<DriveStatus>;
+  driveFlushBeforeQuit?: (timeoutMs?: number | null) => Promise<DriveFlushResult>;
+  driveListRemoteFiles?: () => Promise<DriveRemoteFile[]>;
+  driveDownloadFileContent?: (fileId: string) => Promise<string>;
+  driveRestoreFile?: (
+    fileId: string,
+    remotePath: string,
+    targetDir: string,
+    preserveFolders: boolean
+  ) => Promise<DriveRestoreResult>;
+  driveRestoreAll?: (targetDir: string, preserveFolders: boolean) => Promise<DriveBatchRestoreResult>;
+  onDriveStatusChanged?: (callback: (status: DriveStatus) => void) => () => void;
 }
 
 declare global {

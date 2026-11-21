@@ -250,6 +250,12 @@ import {
   buildCopyTabTitle,
   clampHistorySettings
 } from '../src/utils/historyUtils.ts';
+import {
+  clampDriveSettings,
+  filterRemoteFiles,
+  mapDriveErrorCode,
+  getDriveStatusTone
+} from '../src/utils/driveUtils.ts';
 
 assert.strictEqual(isMarkdownFileName('note.md'), true, 'Should accept .md');
 assert.strictEqual(isMarkdownFileName('component.mdx'), true, 'Should accept .mdx');
@@ -354,6 +360,88 @@ const requiredHistoryKeys = [
   'history.removeDeletedHistory'
 ];
 for (const key of requiredHistoryKeys) {
+  assert(translations.tr[key]?.length > 0, `Turkish translation for "${key}" must exist and be non-empty`);
+  assert(translations.en[key]?.length > 0, `English translation for "${key}" must exist and be non-empty`);
+}
+
+const requiredDriveKeys = [
+  'settings.tabCloud',
+  'settings.cloudTitle',
+  'settings.cloudDesc',
+  'settings.cloudConnect',
+  'settings.cloudConnecting',
+  'settings.cloudCancelAuth',
+  'settings.cloudDisconnect',
+  'settings.cloudDisconnectConfirm',
+  'settings.cloudReconnect',
+  'settings.cloudSyncNow',
+  'settings.cloudRestore',
+  'settings.cloudAutoEnabled',
+  'settings.cloudAutoEnabledDesc',
+  'settings.cloudIdleDelay',
+  'settings.cloudIdleDelayDesc',
+  'settings.cloudSyncInterval',
+  'settings.cloudSyncIntervalDesc',
+  'settings.cloudSeconds',
+  'settings.cloudMinutes',
+  'settings.cloudStats',
+  'settings.cloudLastSyncNever',
+  'settings.cloudScopeNote',
+  'settings.cloudNotConfiguredBanner',
+  'settings.cloudByoTitle',
+  'settings.cloudByoDesc',
+  'settings.cloudClientId',
+  'settings.cloudClientSecret',
+  'settings.cloudClientSecretPlaceholderSaved',
+  'settings.cloudSaveOAuth',
+  'settings.cloudClearOAuth',
+  'settings.cloudSavedOAuth',
+  'status.driveDisconnected',
+  'status.drivePaused',
+  'status.driveIdle',
+  'status.driveSyncing',
+  'status.drivePending',
+  'status.driveOffline',
+  'status.driveAuthRequired',
+  'status.driveError',
+  'status.driveTooltip',
+  'driveRestore.title',
+  'driveRestore.searchPlaceholder',
+  'driveRestore.refresh',
+  'driveRestore.downloadAll',
+  'driveRestore.empty',
+  'driveRestore.selectPrompt',
+  'driveRestore.loading',
+  'driveRestore.loadingContent',
+  'driveRestore.preview',
+  'driveRestore.openInNewTab',
+  'driveRestore.restoreToFolder',
+  'driveRestore.preserveFolders',
+  'driveRestore.restoredSuccess',
+  'driveRestore.batchSuccess',
+  'driveRestore.batchPartialError',
+  'driveRestore.close',
+  'driveRestore.fileCount',
+  'driveQuit.title',
+  'driveQuit.syncingDesc',
+  'driveQuit.timeoutTitle',
+  'driveQuit.errorTitle',
+  'driveQuit.timeoutDesc',
+  'driveQuit.offlineDesc',
+  'driveQuit.skipAndClose',
+  'driveQuit.retry',
+  'driveQuit.closeAnyway',
+  'driveQuit.cancel',
+  'command.driveSyncNow',
+  'command.driveRestore',
+  'command.driveSettings',
+  'driveError.authCancelled',
+  'driveError.authTimeout',
+  'driveError.authDenied',
+  'driveError.authStateMismatch',
+  'driveError.oauthNotConfigured'
+];
+for (const key of requiredDriveKeys) {
   assert(translations.tr[key]?.length > 0, `Turkish translation for "${key}" must exist and be non-empty`);
   assert(translations.en[key]?.length > 0, `English translation for "${key}" must exist and be non-empty`);
 }
@@ -752,6 +840,116 @@ assert.deepStrictEqual(
   { enabled: true, maxVersionsPerFile: 50, autosaveIntervalMinutes: 5 }
 );
 console.log('✓ Version history utilities (historyUtils) test passed');
+
+// Test 20: Google Drive Pure Utilities (driveUtils)
+assert.deepStrictEqual(
+  clampDriveSettings({ enabled: true, syncIntervalMinutes: 0, idleDelaySeconds: 999 }),
+  { enabled: true, syncIntervalMinutes: 1, idleDelaySeconds: 300 }
+);
+assert.deepStrictEqual(
+  clampDriveSettings({ enabled: false, syncIntervalMinutes: 75, idleDelaySeconds: 4.4 }),
+  { enabled: false, syncIntervalMinutes: 60, idleDelaySeconds: 10 }
+);
+assert.deepStrictEqual(
+  clampDriveSettings({ enabled: true, syncIntervalMinutes: Number.NaN, idleDelaySeconds: 45.6 }),
+  { enabled: true, syncIntervalMinutes: 5, idleDelaySeconds: 46 }
+);
+
+const sampleRemoteFiles = [
+  {
+    fileId: 'file-1',
+    name: 'plan.md',
+    remotePath: 'Documents/Proje/plan.md',
+    sizeBytes: 1024,
+    modifiedTimeMs: 1_700_000_000_000
+  },
+  {
+    fileId: 'file-2',
+    name: 'ÖZET.md',
+    remotePath: 'Notlar/İstatistik/ÖZET.md',
+    sizeBytes: 2048,
+    modifiedTimeMs: 1_700_000_100_000
+  },
+  {
+    fileId: 'file-3',
+    name: 'readme.mdx',
+    remotePath: 'readme.mdx',
+    sizeBytes: 512,
+    modifiedTimeMs: null
+  }
+];
+
+assert.deepStrictEqual(
+  filterRemoteFiles(sampleRemoteFiles, ''),
+  sampleRemoteFiles,
+  'Empty query must preserve original remote files and order'
+);
+assert.deepStrictEqual(
+  filterRemoteFiles(sampleRemoteFiles, '   \t '),
+  sampleRemoteFiles,
+  'Whitespace query must preserve original remote files and order'
+);
+assert.deepStrictEqual(
+  filterRemoteFiles(sampleRemoteFiles, 'proje').map(f => f.fileId),
+  ['file-1'],
+  'Case-insensitive match should match folder segments in remotePath'
+);
+assert.deepStrictEqual(
+  filterRemoteFiles(sampleRemoteFiles, 'istatistik').map(f => f.fileId),
+  ['file-2'],
+  'Case-insensitive Turkish folder match should match İstatistik'
+);
+assert.deepStrictEqual(
+  filterRemoteFiles(sampleRemoteFiles, 'özet').map(f => f.fileId),
+  ['file-2'],
+  'Case-insensitive Turkish filename match should match ÖZET.md'
+);
+assert.deepStrictEqual(
+  filterRemoteFiles(sampleRemoteFiles, 'MDX').map(f => f.fileId),
+  ['file-3'],
+  'Case-insensitive match should match filenames'
+);
+
+const mockT = (key) => `i18n:${key}`;
+assert.strictEqual(
+  mapDriveErrorCode('OAUTH_CLIENT_NOT_CONFIGURED', mockT),
+  'i18n:driveError.oauthNotConfigured'
+);
+assert.strictEqual(
+  mapDriveErrorCode('AUTH_CANCELLED', mockT),
+  'i18n:driveError.authCancelled'
+);
+assert.strictEqual(
+  mapDriveErrorCode('AUTH_TIMEOUT', mockT),
+  'i18n:driveError.authTimeout'
+);
+assert.strictEqual(
+  mapDriveErrorCode('AUTH_DENIED: access_denied', mockT),
+  'i18n:driveError.authDenied'
+);
+assert.strictEqual(
+  mapDriveErrorCode('AUTH_STATE_MISMATCH', mockT),
+  'i18n:driveError.authStateMismatch'
+);
+assert.strictEqual(
+  mapDriveErrorCode(new Error('Network connection reset'), mockT),
+  'Network connection reset'
+);
+assert.strictEqual(
+  mapDriveErrorCode('Unexpected Drive failure', mockT),
+  'Unexpected Drive failure'
+);
+
+assert.strictEqual(getDriveStatusTone('idle'), 'success');
+assert.strictEqual(getDriveStatusTone('syncing'), 'info');
+assert.strictEqual(getDriveStatusTone('paused'), 'warning');
+assert.strictEqual(getDriveStatusTone('pending'), 'warning');
+assert.strictEqual(getDriveStatusTone('offline'), 'warning');
+assert.strictEqual(getDriveStatusTone('auth_required'), 'danger');
+assert.strictEqual(getDriveStatusTone('error'), 'danger');
+assert.strictEqual(getDriveStatusTone('disconnected'), 'muted');
+
+console.log('✓ Google Drive utilities (driveUtils) test passed');
 
 console.log('\nAll automated tests passed successfully! 🎉');
 

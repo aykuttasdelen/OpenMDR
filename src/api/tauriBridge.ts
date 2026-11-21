@@ -13,6 +13,13 @@ import {
   DiffResult,
   HistoryStats,
   RecoverFileResult,
+  DriveSettings,
+  DriveAuthConfig,
+  DriveStatus,
+  DriveRemoteFile,
+  DriveRestoreResult,
+  DriveBatchRestoreResult,
+  DriveFlushResult,
 } from '../types/electron';
 import { escapeHtml } from '../utils/markdownUtils';
 
@@ -387,6 +394,98 @@ export const tauriAPI = {
 
   historyGetStats: async (): Promise<HistoryStats> => {
     return invoke<HistoryStats>('history_get_stats');
+  },
+
+  driveGetStatus: async (): Promise<DriveStatus> => {
+    return invoke<DriveStatus>('drive_get_status');
+  },
+
+  driveUpdateSettings: async (settings: DriveSettings): Promise<DriveStatus> => {
+    return invoke<DriveStatus>('drive_update_settings', { settings });
+  },
+
+  driveSaveCustomOAuth: async (
+    clientId: string,
+    clientSecret?: string | null
+  ): Promise<DriveAuthConfig> => {
+    return invoke<DriveAuthConfig>('drive_save_custom_oauth', {
+      clientId,
+      clientSecret: clientSecret ?? null,
+    });
+  },
+
+  driveClearCustomOAuth: async (): Promise<DriveAuthConfig> => {
+    return invoke<DriveAuthConfig>('drive_clear_custom_oauth');
+  },
+
+  driveConnect: async (
+    workspaceDir?: string | null,
+    openFilePaths?: string[] | null
+  ): Promise<DriveStatus> => {
+    return invoke<DriveStatus>('drive_connect', {
+      workspaceDir: workspaceDir ?? null,
+      openFilePaths: openFilePaths ?? null,
+    });
+  },
+
+  driveCancelAuth: async (): Promise<boolean> => {
+    return invoke<boolean>('drive_cancel_auth');
+  },
+
+  driveDisconnect: async (): Promise<DriveStatus> => {
+    return invoke<DriveStatus>('drive_disconnect');
+  },
+
+  driveSyncNow: async (
+    workspaceDir?: string | null,
+    openFilePaths?: string[] | null
+  ): Promise<DriveStatus> => {
+    return invoke<DriveStatus>('drive_sync_now', {
+      workspaceDir: workspaceDir ?? null,
+      openFilePaths: openFilePaths ?? null,
+    });
+  },
+
+  driveFlushBeforeQuit: async (timeoutMs?: number | null): Promise<DriveFlushResult> => {
+    return invoke<DriveFlushResult>('drive_flush_before_quit', {
+      timeoutMs: timeoutMs ?? null,
+    });
+  },
+
+  driveListRemoteFiles: async (): Promise<DriveRemoteFile[]> => {
+    return invoke<DriveRemoteFile[]>('drive_list_remote_files');
+  },
+
+  driveDownloadFileContent: async (fileId: string): Promise<string> => {
+    return invoke<string>('drive_download_file_content', { fileId });
+  },
+
+  driveRestoreFile: async (
+    fileId: string,
+    remotePath: string,
+    targetDir: string,
+    preserveFolders: boolean
+  ): Promise<DriveRestoreResult> => {
+    return invoke<DriveRestoreResult>('drive_restore_file', {
+      fileId,
+      remotePath,
+      targetDir,
+      preserveFolders,
+    });
+  },
+
+  driveRestoreAll: async (
+    targetDir: string,
+    preserveFolders: boolean
+  ): Promise<DriveBatchRestoreResult> => {
+    return invoke<DriveBatchRestoreResult>('drive_restore_all', {
+      targetDir,
+      preserveFolders,
+    });
+  },
+
+  onDriveStatusChanged: (callback: (status: DriveStatus) => void): (() => void) => {
+    return subscribeEvent<DriveStatus>('drive:status-changed', callback);
   },
 };
 
