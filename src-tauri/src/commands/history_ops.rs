@@ -2,6 +2,7 @@ use crate::commands::fs_ops::{resolve_available_path, validate_single_component}
 use crate::commands::image_ops::{allow_asset_dir, register_asset_search_dir};
 use crate::history_store::{
     DeletedFileSummary, DiffResult, HistorySettings, HistoryStats, HistoryStore, SnapshotSummary,
+    MAX_SNAPSHOT_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -39,6 +40,115 @@ where
     tokio::task::spawn_blocking(move || task(&store))
         .await
         .map_err(|e| format!("History background task failed: {e}"))?
+}
+
+/// Captures pre-existing UTF-8 content on disk when history is enabled and no snapshots exist yet.
+pub(crate) async fn capture_pre_write_baseline(
+    store: Option<Arc<HistoryStore>>,
+    file_path: &Path,
+) -> Option<String> {
+    let store = store?;
+    let path_str = file_path.to_string_lossy().to_string();
+
+    let should_capture = match run_blocking_store(store, move |s| {
+        let settings = s.get_settings()?;
+        if !settings.enabled {
+            return Ok(false);
+        }
+        Ok(!s.has_snapshots(&path_str)?)
+    })
+    .await
+    {
+        Ok(should) => should,
+        Err(err) => {
+            eprintln!("[history] Failed pre-write baseline check: {err}");
+            return None;
+        }
+    };
+
+    if !should_capture {
+        return None;
+    }
+
+    let metadata = match tokio::fs::metadata(file_path).await {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err) => {
+            eprintln!(
+                "[history] Failed to inspect pre-write file {}: {err}",
+                file_path.display()
+            );
+            return None;
+        }
+    };
+
+    if !metadata.is_file() || metadata.len() > MAX_SNAPSHOT_BYTES as u64 {
+        return None;
+    }
+
+    let bytes = match tokio::fs::read(file_path).await {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(err) => {
+            eprintln!(
+                "[history] Failed to read pre-write file {}: {err}",
+                file_path.display()
+            );
+            return None;
+        }
+    };
+
+    if bytes.len() > MAX_SNAPSHOT_BYTES {
+        return None;
+    }
+
+    match String::from_utf8(bytes) {
+        Ok(text) => Some(text),
+        Err(err) => {
+            eprintln!(
+                "[history] Skipping non-UTF-8 pre-write baseline for {}: {err}",
+                file_path.display()
+            );
+            None
+        }
+    }
+}
+
+/// Records an optional initial baseline snapshot and the new content snapshot on a blocking thread.
+pub(crate) async fn record_write_with_baseline(
+    store: Option<Arc<HistoryStore>>,
+    file_path: String,
+    pre_existing_content: Option<String>,
+    new_content: String,
+    save_source: String,
+) {
+    let Some(store) = store else {
+        return;
+    };
+
+    let trigger = match save_source.as_str() {
+        "autosave" => "autosave",
+        "initial" => "initial",
+        _ => "manual",
+    };
+
+    if let Err(err) = tokio::task::spawn_blocking(move || {
+        if let Some(old) = pre_existing_content
+            && old != new_content
+            && let Err(err) = store.record_snapshot(&file_path, &old, "initial")
+        {
+            eprintln!(
+                "[history] Failed to record initial baseline snapshot for {file_path}: {err}"
+            );
+        }
+        if let Err(err) = store.record_snapshot(&file_path, &new_content, trigger) {
+            eprintln!("[history] Failed to record {trigger} snapshot for {file_path}: {err}");
+        }
+    })
+    .await
+    {
+        eprintln!("[history] Snapshot background task failed: {err}");
+    }
 }
 
 /// Restores a snapshot to disk after saving current unsaved edits as a `pre_restore` snapshot.
