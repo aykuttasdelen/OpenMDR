@@ -114,6 +114,14 @@ struct ScannedCandidate {
     sha256: String,
 }
 
+struct WakeupSnapshot {
+    all_dirty: Vec<DriveFileRecord>,
+    now_ms: i64,
+    now_inst: Instant,
+    sync_interval: Duration,
+    sync_interval_ms: i64,
+}
+
 /// Resets `active_sync` on drop even if an async flush or sync future is cancelled on timeout.
 struct ActiveSyncGuard<'a> {
     manager: &'a DriveManager,
@@ -929,21 +937,7 @@ impl DriveManager {
     }
 
     async fn evaluate_and_get_next_wakeup(&self) -> Option<Instant> {
-        if !self.can_background_sync() {
-            return None;
-        }
-        let Ok(settings) = self.store.get_drive_settings() else {
-            return None;
-        };
-
-        let all_dirty = self
-            .store
-            .list_due_dirty_files(i64::MAX)
-            .unwrap_or_default();
-        let now_ms = current_unix_ms();
-        let now_inst = Instant::now();
-        let sync_interval = Duration::from_secs(u64::from(settings.sync_interval_minutes.max(1)) * 60);
-
+        let snap = self.load_wakeup_snapshot()?;
         let (idle_deadline, last_sweep_at, backoff_until) = {
             let Ok(rt) = self.runtime.lock() else {
                 return None;
@@ -951,21 +945,20 @@ impl DriveManager {
             (rt.idle_deadline, rt.last_sweep_at, rt.backoff_until)
         };
 
-        let backoff_blocked = backoff_until.is_some_and(|b| now_inst < b);
-        let due_items: Vec<&DriveFileRecord> = all_dirty
+        let due_items: Vec<&DriveFileRecord> = snap
+            .all_dirty
             .iter()
-            .filter(|r| r.next_retry_at <= now_ms)
+            .filter(|r| r.next_retry_at <= snap.now_ms)
             .collect();
         let has_due_items = !due_items.is_empty();
+        let backoff_blocked = backoff_until.is_some_and(|b| snap.now_inst < b);
         let retry_due = due_items.iter().any(|r| r.retry_count > 0);
-        let idle_due = idle_deadline.is_some_and(|d| now_inst >= d) && has_due_items;
-
-        let sync_interval_ms = i64::try_from(sync_interval.as_millis()).unwrap_or(i64::MAX);
+        let idle_due = idle_deadline.is_some_and(|d| snap.now_inst >= d) && has_due_items;
         let earliest_dirty_since_ms = due_items.iter().filter_map(|r| r.dirty_since).min();
         let dirty_interval_elapsed = earliest_dirty_since_ms
-            .is_some_and(|since| now_ms.saturating_sub(since) >= sync_interval_ms);
+            .is_some_and(|since| snap.now_ms.saturating_sub(since) >= snap.sync_interval_ms);
         let sweep_interval_elapsed =
-            last_sweep_at.is_none_or(|t| now_inst.duration_since(t) >= sync_interval);
+            last_sweep_at.is_none_or(|t| snap.now_inst.duration_since(t) >= snap.sync_interval);
         let periodic_due = has_due_items && dirty_interval_elapsed && sweep_interval_elapsed;
 
         if !backoff_blocked && (idle_due || periodic_due || retry_due) {
@@ -973,17 +966,63 @@ impl DriveManager {
                 rt.idle_deadline = None;
             }
             let _ = self.run_background_sweep().await;
-            return Some(Instant::now() + sync_interval);
+            let fresh_snap = self.load_wakeup_snapshot()?;
+            return self.compute_next_wakeup_from_snapshot(&fresh_snap);
         }
 
-        let mut next_wakeup = now_inst + sync_interval;
+        self.compute_next_wakeup_from_snapshot(&snap)
+    }
 
-        if let Some(since_ms) = earliest_dirty_since_ms {
-            let dirty_target_ms = since_ms.saturating_add(sync_interval_ms);
-            let delta = u64::try_from(dirty_target_ms.saturating_sub(now_ms)).unwrap_or(0);
-            let mut periodic_target = now_inst + Duration::from_millis(delta);
+    fn load_wakeup_snapshot(&self) -> Option<WakeupSnapshot> {
+        if !self.can_background_sync() {
+            return None;
+        }
+        let settings = self.store.get_drive_settings().ok()?;
+        let all_dirty = self
+            .store
+            .list_due_dirty_files(i64::MAX)
+            .unwrap_or_default();
+        let sync_interval =
+            Duration::from_secs(u64::from(settings.sync_interval_minutes.max(1)) * 60);
+        let sync_interval_ms = i64::try_from(sync_interval.as_millis()).unwrap_or(i64::MAX);
+        Some(WakeupSnapshot {
+            all_dirty,
+            now_ms: current_unix_ms(),
+            now_inst: Instant::now(),
+            sync_interval,
+            sync_interval_ms,
+        })
+    }
+
+    fn compute_next_wakeup_from_snapshot(&self, snap: &WakeupSnapshot) -> Option<Instant> {
+        let due_items: Vec<&DriveFileRecord> = snap
+            .all_dirty
+            .iter()
+            .filter(|r| r.next_retry_at <= snap.now_ms)
+            .collect();
+        let has_due_items = !due_items.is_empty();
+
+        let (idle_deadline, last_sweep_at, backoff_until) = {
+            let Ok(mut rt) = self.runtime.lock() else {
+                return None;
+            };
+            let backoff_blocked = rt.backoff_until.is_some_and(|b| snap.now_inst < b);
+            if rt.idle_deadline.is_some_and(|d| d <= snap.now_inst)
+                && (!has_due_items || !backoff_blocked)
+            {
+                rt.idle_deadline = None;
+            }
+            (rt.idle_deadline, rt.last_sweep_at, rt.backoff_until)
+        };
+
+        let mut next_wakeup = snap.now_inst + snap.sync_interval;
+
+        if let Some(since_ms) = due_items.iter().filter_map(|r| r.dirty_since).min() {
+            let dirty_target_ms = since_ms.saturating_add(snap.sync_interval_ms);
+            let delta = u64::try_from(dirty_target_ms.saturating_sub(snap.now_ms)).unwrap_or(0);
+            let mut periodic_target = snap.now_inst + Duration::from_millis(delta);
             if let Some(last) = last_sweep_at {
-                periodic_target = periodic_target.max(last + sync_interval);
+                periodic_target = periodic_target.max(last + snap.sync_interval);
             }
             next_wakeup = next_wakeup.min(periodic_target);
         }
@@ -991,22 +1030,24 @@ impl DriveManager {
         if let Some(d) = idle_deadline {
             next_wakeup = next_wakeup.min(d);
         }
-        if let Some(next_retry_ms) = all_dirty
+        if let Some(next_retry_ms) = snap
+            .all_dirty
             .iter()
-            .filter(|r| r.retry_count > 0 && r.next_retry_at > now_ms)
+            .filter(|r| r.retry_count > 0 && r.next_retry_at > snap.now_ms)
             .map(|r| r.next_retry_at)
             .min()
         {
-            let delta = u64::try_from(next_retry_ms.saturating_sub(now_ms)).unwrap_or(0);
-            next_wakeup = next_wakeup.min(now_inst + Duration::from_millis(delta));
+            let delta = u64::try_from(next_retry_ms.saturating_sub(snap.now_ms)).unwrap_or(0);
+            next_wakeup = next_wakeup.min(snap.now_inst + Duration::from_millis(delta));
         }
         if let Some(b) = backoff_until
-            && b > now_inst
+            && b > snap.now_inst
         {
             next_wakeup = next_wakeup.max(b);
         }
 
-        Some(next_wakeup)
+        let min_wakeup = snap.now_inst + Duration::from_millis(50);
+        Some(next_wakeup.max(min_wakeup))
     }
 
     async fn scan_and_enqueue_scope(
@@ -2854,6 +2895,148 @@ mod tests {
         // Run blocking_flush_on_terminate safely even from inside an active Tokio test runtime.
         manager.blocking_flush_on_terminate(Duration::from_secs(2));
         assert_eq!(manager.get_status().unwrap().pending_count, 0);
+
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_wakeup_uses_retry_backoff_after_failed_sweep_and_none_on_auth_required() {
+        // (a) 503 Error: post-sweep wakeup must reflect ~30s retry backoff, not 5m sync_interval.
+        let dir1 = tempdir().unwrap();
+        let state1 = Arc::new(Mutex::new(MockServerState::default()));
+        state1.lock().unwrap().drive_status_override = Some(503);
+        let (oauth1, drive1, handle1) = spawn_mock_google_server(Arc::clone(&state1)).await;
+        let (_store1, token_store1, home1, mgr1) =
+            setup_connected_manager(&dir1, oauth1, drive1, future_unix_ms());
+
+        let docs1 = home1.join("Documents");
+        fs::create_dir_all(&docs1).unwrap();
+        let f1 = docs1.join("err_backoff.md");
+        fs::write(&f1, "503 wakeup").unwrap();
+        mgr1.enqueue_local_file(&f1).await;
+        mgr1.runtime.lock().unwrap().idle_deadline = Some(Instant::now());
+
+        let before1 = Instant::now();
+        let wakeup1 = mgr1
+            .evaluate_and_get_next_wakeup()
+            .await
+            .expect("expected scheduled backoff wakeup after 503 error");
+        let delta1 = wakeup1.saturating_duration_since(before1);
+        assert!(
+            delta1 >= Duration::from_secs(20) && delta1 < Duration::from_secs(60),
+            "expected ~30s backoff wakeup after 503 sweep, got {delta1:?}"
+        );
+
+        // (c) invalid_grant -> AuthRequired: post-sweep wakeup must be None.
+        token_store1
+            .save_tokens(&StoredOAuthTokens {
+                refresh_token: "revoked-refresh".to_string(),
+                access_token: "expired-access".to_string(),
+                expires_at_ms: 1,
+                email: "alice@example.com".to_string(),
+            })
+            .unwrap();
+        {
+            let mut guard = state1.lock().unwrap();
+            guard.drive_status_override = None;
+            guard.token_status = 400;
+            guard.token_body =
+                r#"{"error":"invalid_grant","error_description":"revoked"}"#.to_string();
+        }
+        mgr1.enqueue_local_file(&f1).await;
+        mgr1.runtime.lock().unwrap().idle_deadline = Some(Instant::now());
+        let wakeup_auth = mgr1.evaluate_and_get_next_wakeup().await;
+        assert!(
+            wakeup_auth.is_none(),
+            "expected None wakeup after AuthRequired transition, got {wakeup_auth:?}"
+        );
+        assert_eq!(mgr1.get_status().unwrap().state, DriveSyncState::AuthRequired);
+
+        handle1.abort();
+
+        // (b) Offline (connection refused): post-sweep wakeup must reflect ~30s backoff, not 5m sync_interval.
+        let dir2 = tempdir().unwrap();
+        let closed_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let closed_port = closed_listener.local_addr().unwrap().port();
+        drop(closed_listener);
+        let dead_base = format!("http://127.0.0.1:{closed_port}");
+        let dead_oauth = OAuthEndpoints {
+            auth_url: format!("{dead_base}/auth"),
+            token_url: format!("{dead_base}/token"),
+            revoke_url: format!("{dead_base}/revoke"),
+            userinfo_url: format!("{dead_base}/userinfo"),
+        };
+        let dead_drive = DriveApiEndpoints {
+            api_base_url: format!("{dead_base}/drive/v3"),
+            upload_base_url: format!("{dead_base}/upload/drive/v3"),
+        };
+        let (_store2, _ts2, home2, mgr2) =
+            setup_connected_manager(&dir2, dead_oauth, dead_drive, future_unix_ms());
+        let docs2 = home2.join("Documents");
+        fs::create_dir_all(&docs2).unwrap();
+        let f2 = docs2.join("offline_backoff.md");
+        fs::write(&f2, "offline wakeup").unwrap();
+        mgr2.enqueue_local_file(&f2).await;
+        mgr2.runtime.lock().unwrap().idle_deadline = Some(Instant::now());
+
+        let before2 = Instant::now();
+        let wakeup2 = mgr2
+            .evaluate_and_get_next_wakeup()
+            .await
+            .expect("expected scheduled backoff wakeup after offline sweep");
+        let delta2 = wakeup2.saturating_duration_since(before2);
+        assert!(
+            delta2 >= Duration::from_secs(20) && delta2 < Duration::from_secs(60),
+            "expected ~30s backoff wakeup after offline sweep, got {delta2:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_evaluate_wakeup_clears_stale_idle_deadline_during_error_backoff() {
+        let dir = tempdir().unwrap();
+        let server_state = Arc::new(Mutex::new(MockServerState::default()));
+        server_state.lock().unwrap().drive_status_override = Some(503);
+        let (oauth_ep, drive_ep, server_handle) =
+            spawn_mock_google_server(Arc::clone(&server_state)).await;
+        let (store, _ts, home_dir, manager) =
+            setup_connected_manager(&dir, oauth_ep, drive_ep, future_unix_ms());
+
+        let docs_dir = home_dir.join("Documents");
+        fs::create_dir_all(&docs_dir).unwrap();
+        let file_path = docs_dir.join("stale_idle.md");
+        fs::write(&file_path, "stale idle test").unwrap();
+
+        manager.enqueue_local_file(&file_path).await;
+        let _ = manager.run_background_sweep().await;
+        let rec = store
+            .get_drive_file(file_path.to_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(rec.dirty);
+        assert_eq!(rec.retry_count, 1);
+
+        // Simulate a stale past idle_deadline (e.g. from update_settings) while backoff_until is None.
+        {
+            let mut rt = manager.runtime.lock().unwrap();
+            rt.backoff_until = None;
+            rt.idle_deadline = Some(Instant::now() - Duration::from_secs(1));
+        }
+
+        let before = Instant::now();
+        let wakeup = manager
+            .evaluate_and_get_next_wakeup()
+            .await
+            .expect("expected future retry wakeup");
+        let delta = wakeup.saturating_duration_since(before);
+
+        assert!(
+            manager.runtime.lock().unwrap().idle_deadline.is_none(),
+            "stale past idle_deadline must be cleared when no items are due"
+        );
+        assert!(
+            delta >= Duration::from_secs(20) && delta < Duration::from_secs(60),
+            "expected future ~30s retry deadline instead of 0ms spin, got {delta:?}"
+        );
 
         server_handle.abort();
     }
