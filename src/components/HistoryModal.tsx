@@ -115,6 +115,9 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
   const [error, setError] = useState<string | null>(null);
 
   const isMountedRef = useRef(true);
+  const isOpenRef = useRef(isOpen);
+  isOpenRef.current = isOpen;
+  const openSessionRef = useRef(0);
   const viewerSeqRef = useRef(0);
   const deletedFileSeqRef = useRef(0);
   const deletedContentSeqRef = useRef(0);
@@ -122,9 +125,13 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
   const api = typeof window !== 'undefined' ? window.electronAPI : undefined;
   const isBusy = busyAction !== null;
 
+  const isSessionActive = (session: number): boolean =>
+    isMountedRef.current && isOpenRef.current && session === openSessionRef.current;
+
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
+      openSessionRef.current += 1;
       isMountedRef.current = false;
     };
   }, []);
@@ -134,20 +141,26 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        onClose();
+        if (!isBusy) {
+          onClose();
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+  }, [isOpen, isBusy, onClose]);
 
   useEffect(() => {
     if (!isOpen) {
+      openSessionRef.current += 1;
       viewerSeqRef.current += 1;
       deletedFileSeqRef.current += 1;
       deletedContentSeqRef.current += 1;
+      setBusyAction(null);
       return;
     }
+
+    const session = ++openSessionRef.current;
 
     setActiveTab(initialTab);
     setViewMode('diff');
@@ -177,7 +190,7 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
     const deletedPromise = api.historyListDeletedFiles();
 
     Promise.allSettled([snapshotsPromise, deletedPromise]).then(([snapRes, delRes]) => {
-      if (cancelled || !isMountedRef.current) return;
+      if (cancelled || !isSessionActive(session)) return;
 
       let firstError: string | null = null;
 
@@ -355,24 +368,33 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
     setSelectedDeletedFileId(fileId);
   };
 
+  const handleRequestClose = () => {
+    if (isBusy) return;
+    onClose();
+  };
+
   const handleOpenCopy = async () => {
     if (!api || !selectedSnapshot || isBusy) return;
+    const session = openSessionRef.current;
+    const targetSnapshot = selectedSnapshot;
+    const sourceName = activeFilePath
+      ? getBasename(activeFilePath)
+      : activeFileTitle?.trim() || '';
+
     setBusyAction('copying');
     setError(null);
     try {
-      const content = await api.historyGetSnapshotContent(selectedSnapshot.id);
-      const sourceName = activeFilePath
-        ? getBasename(activeFilePath)
-        : activeFileTitle?.trim() || '';
-      const copyTitle = buildCopyTabTitle(sourceName, selectedSnapshot.createdAt, language);
+      const content = await api.historyGetSnapshotContent(targetSnapshot.id);
+      if (!isSessionActive(session)) return;
+      const copyTitle = buildCopyTabTitle(sourceName, targetSnapshot.createdAt, language);
       onOpenCopy(copyTitle, content);
       onClose();
     } catch (err) {
-      if (isMountedRef.current) {
+      if (isSessionActive(session)) {
         setError(t('history.loadError', { error: formatErrorMessage(err) }));
       }
     } finally {
-      if (isMountedRef.current) {
+      if (isSessionActive(session)) {
         setBusyAction(null);
       }
     }
@@ -380,24 +402,30 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
 
   const handleRestore = async () => {
     if (!api || !activeFilePath || !selectedSnapshot || isBusy) return;
+    const session = openSessionRef.current;
+    const targetPath = activeFilePath;
+    const targetSnapshotId = selectedSnapshot.id;
+    const contentBeforeRestore = activeContent;
     if (!window.confirm(t('history.restoreConfirm'))) return;
+    if (!isSessionActive(session)) return;
 
     setBusyAction('restoring');
     setError(null);
     try {
       const restored = await api.historyRestoreSnapshot(
-        activeFilePath,
-        selectedSnapshot.id,
-        activeContent
+        targetPath,
+        targetSnapshotId,
+        contentBeforeRestore
       );
-      onRestored(activeFilePath, restored);
+      if (!isSessionActive(session)) return;
+      onRestored(targetPath, restored);
       onClose();
     } catch (err) {
-      if (isMountedRef.current) {
+      if (isSessionActive(session)) {
         setError(t('history.restoreError', { error: formatErrorMessage(err) }));
       }
     } finally {
-      if (isMountedRef.current) {
+      if (isSessionActive(session)) {
         setBusyAction(null);
       }
     }
@@ -405,14 +433,16 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
 
   const handleClearCurrentFileHistory = async () => {
     if (!api || snapshots.length === 0 || isBusy) return;
+    const session = openSessionRef.current;
     const targetFileId = selectedSnapshot?.fileId ?? snapshots[0].fileId;
     if (!window.confirm(t('history.clearFileHistoryConfirm'))) return;
+    if (!isSessionActive(session)) return;
 
     setBusyAction('deleting');
     setError(null);
     try {
       await api.historyDeleteFileHistory(targetFileId);
-      if (!isMountedRef.current) return;
+      if (!isSessionActive(session)) return;
       viewerSeqRef.current += 1;
       setSnapshots([]);
       setSelectedSnapshotId(null);
@@ -420,11 +450,11 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
       setSnapshotContent(null);
       setDeletedFiles(prev => prev.filter(item => item.fileId !== targetFileId));
     } catch (err) {
-      if (isMountedRef.current) {
+      if (isSessionActive(session)) {
         setError(t('history.deleteError', { error: formatErrorMessage(err) }));
       }
     } finally {
-      if (isMountedRef.current) {
+      if (isSessionActive(session)) {
         setBusyAction(null);
       }
     }
@@ -432,14 +462,16 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
 
   const handleRemoveDeletedFileHistory = async () => {
     if (!api || !selectedDeletedFile || isBusy) return;
+    const session = openSessionRef.current;
     const target = selectedDeletedFile;
     if (!window.confirm(t('history.removeDeletedConfirm', { name: target.fileName }))) return;
+    if (!isSessionActive(session)) return;
 
     setBusyAction('deleting');
     setError(null);
     try {
       await api.historyDeleteFileHistory(target.fileId);
-      if (!isMountedRef.current) return;
+      if (!isSessionActive(session)) return;
       deletedFileSeqRef.current += 1;
       deletedContentSeqRef.current += 1;
       const remaining = deletedFiles.filter(item => item.fileId !== target.fileId);
@@ -449,11 +481,11 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
       setDeletedContent(null);
       setSelectedDeletedFileId(remaining[0]?.fileId ?? null);
     } catch (err) {
-      if (isMountedRef.current) {
+      if (isSessionActive(session)) {
         setError(t('history.deleteError', { error: formatErrorMessage(err) }));
       }
     } finally {
-      if (isMountedRef.current) {
+      if (isSessionActive(session)) {
         setBusyAction(null);
       }
     }
@@ -461,31 +493,36 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
 
   const handleRecoverFile = async (chooseFolder: boolean) => {
     if (!api || !selectedDeletedFile || selectedDeletedSnapshotId === null || isBusy) return;
+    const session = openSessionRef.current;
+    const targetFileId = selectedDeletedFile.fileId;
+    const targetSnapshotId = selectedDeletedSnapshotId;
+
     setBusyAction('recovering');
     setError(null);
     try {
       let targetDir: string | null = null;
       if (chooseFolder) {
         const picked = await api.openDirectoryDialog(false);
-        if (!picked?.dirPath) {
+        if (!isSessionActive(session) || !picked?.dirPath) {
           return;
         }
         targetDir = picked.dirPath;
       }
 
       const recovered = await api.historyRecoverFile(
-        selectedDeletedFile.fileId,
-        selectedDeletedSnapshotId,
+        targetFileId,
+        targetSnapshotId,
         targetDir
       );
+      if (!isSessionActive(session)) return;
       onRecovered(recovered);
       onClose();
     } catch (err) {
-      if (isMountedRef.current) {
+      if (isSessionActive(session)) {
         setError(t('history.recoverError', { error: formatErrorMessage(err) }));
       }
     } finally {
-      if (isMountedRef.current) {
+      if (isSessionActive(session)) {
         setBusyAction(null);
       }
     }
@@ -851,7 +888,7 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={handleRequestClose}>
       <div
         className="palette-box history-modal-box"
         role="dialog"
@@ -873,7 +910,8 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
           <button
             type="button"
             className="btn-icon"
-            onClick={onClose}
+            onClick={handleRequestClose}
+            disabled={isBusy}
             style={{ width: 26, height: 26 }}
             title={t('history.close')}
             aria-label={t('history.close')}
@@ -890,7 +928,7 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
             </div>
             <div className="history-footer">
               <div className="history-footer-actions">
-                <button type="button" className="btn-secondary" onClick={onClose}>
+                <button type="button" className="btn-secondary" onClick={handleRequestClose}>
                   {t('history.close')}
                 </button>
               </div>
@@ -905,6 +943,7 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
                 role="tab"
                 aria-selected={activeTab === 'current'}
                 className={`settings-tab-btn ${activeTab === 'current' ? 'active' : ''}`}
+                disabled={isBusy}
                 onClick={() => {
                   setError(null);
                   setActiveTab('current');
@@ -921,6 +960,7 @@ export const HistoryModal: React.FC<HistoryModalProps> = ({
                 role="tab"
                 aria-selected={activeTab === 'deleted'}
                 className={`settings-tab-btn ${activeTab === 'deleted' ? 'active' : ''}`}
+                disabled={isBusy}
                 onClick={() => {
                   setError(null);
                   setActiveTab('deleted');
