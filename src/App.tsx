@@ -1867,8 +1867,8 @@ export const App: React.FC = () => {
         onToggleFilterMdOnly={() => setFilterMdOnly(prev => !prev)}
         historySettings={historySettings}
         historyStats={historyStats}
-        onUpdateHistorySettings={handleUpdateHistorySettings}
-        onClearAllHistory={handleClearAllHistory}
+        onUpdateHistorySettings={typeof window !== 'undefined' && window.electronAPI?.historyUpdateSettings ? handleUpdateHistorySettings : undefined}
+        onClearAllHistory={typeof window !== 'undefined' && window.electronAPI?.historyClearAll ? handleClearAllHistory : undefined}
       />
 
       {/* Version History Modal */}

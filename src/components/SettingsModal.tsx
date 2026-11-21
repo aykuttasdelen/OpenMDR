@@ -190,7 +190,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const applyMaxVersionsPreset = (preset: number) => {
-    if (historyBusyRef.current) return;
+    if (!onUpdateHistorySettings || historyBusyRef.current || !currentHistorySettings.enabled) return;
     const clamped = clampHistorySettings({
       ...currentHistorySettings,
       maxVersionsPerFile: preset,
@@ -576,6 +576,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         key={preset}
                         type="button"
                         className={`btn-secondary ${currentHistorySettings.maxVersionsPerFile === preset ? 'btn-selected' : ''}`}
+                        onMouseDown={e => e.preventDefault()}
                         onClick={() => applyMaxVersionsPreset(preset)}
                         disabled={historyControlsDisabled}
                         style={{
