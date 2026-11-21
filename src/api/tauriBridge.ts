@@ -1,7 +1,19 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
-import { FileItem, OCRProgress, OCRResult, OCROptions } from '../types/electron';
+import {
+  FileItem,
+  OCRProgress,
+  OCRResult,
+  OCROptions,
+  SaveSource,
+  HistorySettings,
+  SnapshotSummary,
+  DeletedFileSummary,
+  DiffResult,
+  HistoryStats,
+  RecoverFileResult,
+} from '../types/electron';
 import { escapeHtml } from '../utils/markdownUtils';
 
 function subscribeEvent<T>(
@@ -50,8 +62,16 @@ export const tauriAPI = {
     return invoke<string>('read_file', { filePath });
   },
 
-  writeFile: async (filePath: string, content: string): Promise<boolean> => {
-    return invoke<boolean>('write_file', { filePath, content });
+  writeFile: async (
+    filePath: string,
+    content: string,
+    saveSource?: SaveSource
+  ): Promise<boolean> => {
+    return invoke<boolean>('write_file', {
+      filePath,
+      content,
+      saveSource: saveSource || null,
+    });
   },
 
   openFileDialog: async (): Promise<OpenFileResult | null> => {
@@ -300,6 +320,73 @@ export const tauriAPI = {
         unlistenFn = null;
       }
     };
+  },
+
+  historyGetSettings: async (): Promise<HistorySettings> => {
+    return invoke<HistorySettings>('history_get_settings');
+  },
+
+  historyUpdateSettings: async (settings: HistorySettings): Promise<HistorySettings> => {
+    return invoke<HistorySettings>('history_update_settings', { settings });
+  },
+
+  historyListSnapshots: async (filePath: string): Promise<SnapshotSummary[]> => {
+    return invoke<SnapshotSummary[]>('history_list_snapshots', { filePath });
+  },
+
+  historyListSnapshotsByFileId: async (fileId: number): Promise<SnapshotSummary[]> => {
+    return invoke<SnapshotSummary[]>('history_list_snapshots_by_file_id', { fileId });
+  },
+
+  historyGetSnapshotContent: async (snapshotId: number): Promise<string> => {
+    return invoke<string>('history_get_snapshot_content', { snapshotId });
+  },
+
+  historyDiffSnapshot: async (
+    snapshotId: number,
+    currentContent: string
+  ): Promise<DiffResult> => {
+    return invoke<DiffResult>('history_diff_snapshot', { snapshotId, currentContent });
+  },
+
+  historyRestoreSnapshot: async (
+    filePath: string,
+    snapshotId: number,
+    currentContent: string
+  ): Promise<string> => {
+    return invoke<string>('history_restore_snapshot', {
+      filePath,
+      snapshotId,
+      currentContent,
+    });
+  },
+
+  historyListDeletedFiles: async (): Promise<DeletedFileSummary[]> => {
+    return invoke<DeletedFileSummary[]>('history_list_deleted_files');
+  },
+
+  historyRecoverFile: async (
+    fileId: number,
+    snapshotId: number,
+    targetDir?: string | null
+  ): Promise<RecoverFileResult> => {
+    return invoke<RecoverFileResult>('history_recover_file', {
+      fileId,
+      snapshotId,
+      targetDir: targetDir ?? null,
+    });
+  },
+
+  historyDeleteFileHistory: async (fileId: number): Promise<boolean> => {
+    return invoke<boolean>('history_delete_file_history', { fileId });
+  },
+
+  historyClearAll: async (): Promise<boolean> => {
+    return invoke<boolean>('history_clear_all');
+  },
+
+  historyGetStats: async (): Promise<HistoryStats> => {
+    return invoke<HistoryStats>('history_get_stats');
   },
 };
 

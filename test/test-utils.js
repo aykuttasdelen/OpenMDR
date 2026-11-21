@@ -240,7 +240,16 @@ import {
   hasUnsavedChanges, 
   getUnsavedTabs 
 } from '../src/utils/markdownUtils.ts';
-import { getTranslation, translations } from '../src/i18n/translations.ts';
+import {
+  getTranslation,
+  translations
+} from '../src/i18n/translations.ts';
+import {
+  formatByteSize,
+  formatRelativeTimestamp,
+  buildCopyTabTitle,
+  clampHistorySettings
+} from '../src/utils/historyUtils.ts';
 
 assert.strictEqual(isMarkdownFileName('note.md'), true, 'Should accept .md');
 assert.strictEqual(isMarkdownFileName('component.mdx'), true, 'Should accept .mdx');
@@ -308,6 +317,45 @@ for (const key of trKeys) {
   assert(key in translations.en, `Key "${key}" in Turkish must also exist in English dictionary`);
   assert(translations.en[key].length > 0, `English translation for "${key}" must not be empty`);
   assert(translations.tr[key].length > 0, `Turkish translation for "${key}" must not be empty`);
+}
+
+const requiredHistoryKeys = [
+  'titlebar.history',
+  'command.versionHistory',
+  'command.recoverDeleted',
+  'settings.historyTitle',
+  'settings.historyEnabled',
+  'settings.historyEnabledDesc',
+  'settings.historyMaxVersions',
+  'settings.historyMaxVersionsDesc',
+  'settings.historyAutosaveInterval',
+  'settings.historyAutosaveIntervalDesc',
+  'settings.historyMinutes',
+  'settings.historyStorageStats',
+  'settings.historyClearAll',
+  'settings.historyClearAllConfirm',
+  'settings.historyCleared',
+  'history.title',
+  'history.tabCurrentFile',
+  'history.tabDeletedFiles',
+  'history.triggerInitial',
+  'history.triggerManual',
+  'history.triggerAutosave',
+  'history.triggerPreRestore',
+  'history.viewDiff',
+  'history.viewContent',
+  'history.diffDirection',
+  'history.diffStats',
+  'history.diffTruncated',
+  'history.openCopyBtn',
+  'history.restoreBtn',
+  'history.recoverOriginal',
+  'history.recoverToFolder',
+  'history.removeDeletedHistory'
+];
+for (const key of requiredHistoryKeys) {
+  assert(translations.tr[key]?.length > 0, `Turkish translation for "${key}" must exist and be non-empty`);
+  assert(translations.en[key]?.length > 0, `English translation for "${key}" must exist and be non-empty`);
 }
 console.log(`✓ i18n translation system passed with ${trKeys.length} matching keys`);
 
@@ -668,6 +716,42 @@ ctx.closePDF()
 }
 
 await testNativeOCREngineE2E();
+
+// Test 19: Version History Pure Utilities (historyUtils)
+assert.strictEqual(formatByteSize(0), '0 B');
+assert.strictEqual(formatByteSize(512), '512 B');
+assert.strictEqual(formatByteSize(1536), '1.5 KB');
+assert.strictEqual(formatByteSize(2 * 1024 * 1024), '2.0 MB');
+
+assert.strictEqual(formatRelativeTimestamp(10_000, 'tr', 40_000), 'Az önce');
+assert.strictEqual(formatRelativeTimestamp(10_000, 'en', 40_000), 'Just now');
+assert.strictEqual(formatRelativeTimestamp(0, 'tr', 5 * 60_000), '5 dk önce');
+assert.strictEqual(formatRelativeTimestamp(0, 'en', 5 * 60_000), '5 min ago');
+assert.strictEqual(formatRelativeTimestamp(0, 'tr', 2 * 3600_000), '2 sa önce');
+assert.strictEqual(formatRelativeTimestamp(0, 'en', 2 * 3600_000), '2h ago');
+const oldDateLabel = formatRelativeTimestamp(new Date(2026, 10, 1, 9, 15).getTime(), 'en', new Date(2026, 10, 21, 14, 0).getTime());
+assert(oldDateLabel.length > 0 && !oldDateLabel.includes('ago'), 'Older timestamps should format as localized date/time');
+
+const sampleTime = new Date(2026, 10, 21, 14, 32).getTime();
+assert.strictEqual(buildCopyTabTitle('notes.md', sampleTime, 'tr'), 'notes (14-32 kopya).md');
+assert.strictEqual(buildCopyTabTitle('notes.md', sampleTime, 'en'), 'notes (14-32 copy).md');
+assert(buildCopyTabTitle('notes.md', sampleTime, 'en').endsWith('(14-32 copy).md'));
+assert.strictEqual(buildCopyTabTitle('guide.mdx', sampleTime, 'tr'), 'guide (14-32 kopya).mdx');
+assert.strictEqual(buildCopyTabTitle('guide.mdx', sampleTime, 'en'), 'guide (14-32 copy).mdx');
+
+assert.deepStrictEqual(
+  clampHistorySettings({ enabled: true, maxVersionsPerFile: 1, autosaveIntervalMinutes: 99 }),
+  { enabled: true, maxVersionsPerFile: 5, autosaveIntervalMinutes: 60 }
+);
+assert.deepStrictEqual(
+  clampHistorySettings({ enabled: false, maxVersionsPerFile: 250.4, autosaveIntervalMinutes: 0.2 }),
+  { enabled: false, maxVersionsPerFile: 200, autosaveIntervalMinutes: 1 }
+);
+assert.deepStrictEqual(
+  clampHistorySettings({ enabled: true, maxVersionsPerFile: 49.6, autosaveIntervalMinutes: 4.6 }),
+  { enabled: true, maxVersionsPerFile: 50, autosaveIntervalMinutes: 5 }
+);
+console.log('✓ Version history utilities (historyUtils) test passed');
 
 console.log('\nAll automated tests passed successfully! 🎉');
 
