@@ -11,7 +11,16 @@ import { ExportModal } from './components/ExportModal';
 import { OCRModal } from './components/OCRModal';
 import { SettingsModal } from './components/SettingsModal';
 import { UnsavedChangesModal } from './components/UnsavedChangesModal';
-import { Tab, FileItem, ViewMode, ThemeMode } from './types/electron';
+import { HistoryModal } from './components/HistoryModal';
+import {
+  Tab,
+  FileItem,
+  ViewMode,
+  ThemeMode,
+  HistorySettings,
+  HistoryStats,
+  RecoverFileResult
+} from './types/electron';
 import { DEFAULT_WELCOME_MARKDOWN } from './utils/defaultDocument';
 import { useTranslation } from './i18n/LanguageContext';
 import { 
@@ -46,7 +55,8 @@ import {
   FolderCheck,
   X,
   XCircle,
-  ScanText
+  ScanText,
+  History
 } from 'lucide-react';
 
 function createTabId(): string {
@@ -54,6 +64,20 @@ function createTabId(): string {
     return `tab-${crypto.randomUUID()}`;
   }
   return `tab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+const DEFAULT_HISTORY_SETTINGS: HistorySettings = {
+  enabled: true,
+  maxVersionsPerFile: 50,
+  autosaveIntervalMinutes: 3
+};
+
+function isPathInsideDir(filePath: string, dirPath: string): boolean {
+  if (!dirPath) return false;
+  if (dirPath.endsWith('/') || dirPath.endsWith('\\')) {
+    return filePath.startsWith(dirPath);
+  }
+  return filePath.startsWith(`${dirPath}/`) || filePath.startsWith(`${dirPath}\\`);
 }
 
 const STORAGE_KEYS = {
@@ -119,6 +143,10 @@ export const App: React.FC = () => {
   const [ocrModalOpen, setOcrModalOpen] = useState(false);
   const [ocrInitialPdfPath, setOcrInitialPdfPath] = useState<string | null>(null);
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [historyModalInitialTab, setHistoryModalInitialTab] = useState<'current' | 'deleted'>('current');
+  const [historySettings, setHistorySettings] = useState<HistorySettings>(DEFAULT_HISTORY_SETTINGS);
+  const [historyStats, setHistoryStats] = useState<HistoryStats | null>(null);
   const [unsavedModalOpen, setUnsavedModalOpen] = useState(false);
   const [pendingCloseAction, setPendingCloseAction] = useState<'window' | 'workspace' | null>(null);
 
@@ -293,6 +321,76 @@ export const App: React.FC = () => {
     }
   }, [filterMdOnly]);
 
+  const syncHistoryState = useCallback(async (includeStats: boolean, isCancelled?: () => boolean) => {
+    const api = window.electronAPI;
+    if (!api) return;
+    if (api.historyGetSettings) {
+      try {
+        const nextSettings = await api.historyGetSettings();
+        if (!isCancelled?.()) {
+          setHistorySettings(nextSettings);
+        }
+      } catch (err) {
+        console.warn('Failed to load history settings:', err);
+      }
+    }
+    if (includeStats && api.historyGetStats) {
+      try {
+        const nextStats = await api.historyGetStats();
+        if (!isCancelled?.()) {
+          setHistoryStats(nextStats);
+        }
+      } catch (err) {
+        console.warn('Failed to fetch history stats:', err);
+      }
+    }
+  }, []);
+
+  const refreshHistoryStats = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!api?.historyGetStats) return;
+    try {
+      const nextStats = await api.historyGetStats();
+      setHistoryStats(nextStats);
+    } catch (err) {
+      console.warn('Failed to fetch history stats:', err);
+    }
+  }, []);
+
+  // Load version history settings on mount
+  useEffect(() => {
+    let cancelled = false;
+    void syncHistoryState(false, () => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [syncHistoryState]);
+
+  // Refresh version history settings & stats whenever SettingsModal opens
+  useEffect(() => {
+    if (!settingsModalOpen) return;
+    let cancelled = false;
+    void syncHistoryState(true, () => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [settingsModalOpen, syncHistoryState]);
+
+  const handleUpdateHistorySettings = useCallback(async (next: HistorySettings) => {
+    const api = window.electronAPI;
+    if (!api?.historyUpdateSettings) return;
+    const updated = await api.historyUpdateSettings(next);
+    setHistorySettings(updated);
+    await refreshHistoryStats();
+  }, [refreshHistoryStats]);
+
+  const handleClearAllHistory = useCallback(async () => {
+    const api = window.electronAPI;
+    if (!api?.historyClearAll) return;
+    await api.historyClearAll();
+    await refreshHistoryStats();
+  }, [refreshHistoryStats]);
+
   // Content change handler with docId support
   const handleContentChange = useCallback((newContent: string, docId?: string) => {
     const targetId = docId || activeTabId;
@@ -342,7 +440,7 @@ export const App: React.FC = () => {
         }
 
         if (finalPath) {
-          await window.electronAPI.writeFile(finalPath, contentToWrite);
+          await window.electronAPI.writeFile(finalPath, contentToWrite, 'autosave');
           setTabs(prev => prev.map(t => {
             if (t.id === targetTabId) {
               return {
@@ -437,7 +535,7 @@ export const App: React.FC = () => {
     // 4. Automatically save file to disk immediately upon tab creation
     if (finalFilePath && window.electronAPI?.writeFile) {
       try {
-        await window.electronAPI.writeFile(finalFilePath, initialContent);
+        await window.electronAPI.writeFile(finalFilePath, initialContent, 'initial');
       } catch (e) {
         console.error('Failed to pre-create new file on disk:', e);
       }
@@ -483,6 +581,66 @@ export const App: React.FC = () => {
     setActiveTabId(newTab.id);
     setTimeout(() => editorRef.current?.focus(), 60);
   }, [tabs]);
+
+  const openHistoryModal = useCallback((initialTab: 'current' | 'deleted' = 'current') => {
+    setHistoryModalInitialTab(initialTab);
+    setHistoryModalOpen(true);
+  }, []);
+
+  const handleHistoryRestored = useCallback((filePath: string, restoredContent: string) => {
+    setTabs(prev => prev.map(t => (
+      t.filePath === filePath
+        ? {
+            ...t,
+            content: restoredContent,
+            savedContent: restoredContent,
+            isModified: false
+          }
+        : t
+    )));
+    setTimeout(() => editorRef.current?.focus(), 60);
+    void refreshHistoryStats();
+  }, [refreshHistoryStats]);
+
+  const handleHistoryOpenCopy = useCallback((title: string, content: string) => {
+    const newTab: Tab = {
+      id: createTabId(),
+      title,
+      filePath: undefined,
+      content,
+      savedContent: '',
+      isModified: true
+    };
+    setTabs(prev => [...prev, newTab]);
+    setActiveTabId(newTab.id);
+    setTimeout(() => editorRef.current?.focus(), 60);
+  }, []);
+
+  const handleHistoryRecovered = useCallback((result: RecoverFileResult) => {
+    const existing = tabs.find(t => t.filePath === result.filePath);
+    if (existing) {
+      setTabs(prev => prev.map(t => (
+        t.filePath === result.filePath
+          ? {
+              ...t,
+              title: result.fileName,
+              content: result.content,
+              savedContent: result.content,
+              isModified: false
+            }
+          : t
+      )));
+      setActiveTabId(existing.id);
+      setTimeout(() => editorRef.current?.focus(), 60);
+    } else {
+      openFileInTab(result.filePath, result.fileName, result.content);
+    }
+
+    if (rootFolderPath && isPathInsideDir(result.filePath, rootFolderPath)) {
+      handleRefreshTree().catch(err => console.warn('Failed to refresh tree after recovery:', err));
+    }
+    void refreshHistoryStats();
+  }, [tabs, openFileInTab, rootFolderPath, handleRefreshTree, refreshHistoryStats]);
 
   const handleOCRComplete = useCallback(async (
     markdown: string,
@@ -532,7 +690,7 @@ export const App: React.FC = () => {
 
       if (finalFilePath && window.electronAPI?.writeFile) {
         try {
-          await window.electronAPI.writeFile(finalFilePath, markdown);
+          await window.electronAPI.writeFile(finalFilePath, markdown, 'initial');
         } catch (e) {
           console.error('Failed to save OCR file to disk:', e);
         }
@@ -658,7 +816,7 @@ export const App: React.FC = () => {
           if (!selectedPath) return;
           targetPath = selectedPath;
         } else {
-          await window.electronAPI.writeFile(targetPath, contentToWrite);
+          await window.electronAPI.writeFile(targetPath, contentToWrite, 'manual');
         }
 
         const fileName = getBasename(targetPath) || activeTab.title;
@@ -749,7 +907,7 @@ export const App: React.FC = () => {
 
       if (targetPath) {
         try {
-          await window.electronAPI.writeFile(targetPath, tab.content);
+          await window.electronAPI.writeFile(targetPath, tab.content, 'manual');
           const savedPath = targetPath;
           setTabs(prev => prev.map(t => t.id === tab.id ? {
             ...t,
@@ -1060,6 +1218,9 @@ export const App: React.FC = () => {
       } else if (isCmd && e.key.toLowerCase() === 'i') {
         e.preventDefault();
         handleInsertFormat('*', '*', 'italic');
+      } else if (isCmd && e.shiftKey && e.key.toLowerCase() === 'h') {
+        e.preventDefault();
+        openHistoryModal('current');
       }
     };
 
@@ -1072,7 +1233,8 @@ export const App: React.FC = () => {
     handleOpenFolder, 
     handleSaveFile, 
     handleCloseTab,
-    handleInsertFormat
+    handleInsertFormat,
+    openHistoryModal
   ]);
 
   // Electron Native Menu Command Dispatcher
@@ -1087,6 +1249,7 @@ export const App: React.FC = () => {
         case 'close-workspace': handleCloseWorkspace(); break;
         case 'save-file': handleSaveFile(false); break;
         case 'save-file-as': handleSaveFile(true); break;
+        case 'version-history': openHistoryModal('current'); break;
         case 'close-tab': handleCloseTab(activeTabId); break;
         case 'toggle-sidebar': setSidebarOpen(prev => !prev); break;
         case 'view-editor': setViewMode('editor'); break;
@@ -1118,7 +1281,8 @@ export const App: React.FC = () => {
     handleCloseWorkspace,
     handleSaveFile, 
     handleCloseTab,
-    handleInsertFormat
+    handleInsertFormat,
+    openHistoryModal
   ]);
 
   // Drag and Drop File & Folder Support
@@ -1342,6 +1506,19 @@ export const App: React.FC = () => {
       action: () => setAutoSaveEnabled(prev => !prev)
     },
     {
+      id: 'cmd-version-history',
+      title: t('command.versionHistory'),
+      shortcut: 'Cmd+Shift+H',
+      icon: <History size={16} />,
+      action: () => openHistoryModal('current')
+    },
+    {
+      id: 'cmd-recover-deleted',
+      title: t('command.recoverDeleted'),
+      icon: <RotateCcw size={16} />,
+      action: () => openHistoryModal('deleted')
+    },
+    {
       id: 'cmd-settings',
       title: t('command.settings'),
       shortcut: 'Cmd+,',
@@ -1442,7 +1619,8 @@ export const App: React.FC = () => {
     handleSaveFile, 
     autoSaveEnabled, 
     activeTab, 
-    theme
+    theme,
+    openHistoryModal
   ]);
 
   return (
@@ -1465,6 +1643,7 @@ export const App: React.FC = () => {
           setOcrInitialPdfPath(null);
           setOcrModalOpen(true);
         }}
+        onOpenHistory={() => openHistoryModal('current')}
         onOpenCommandPalette={() => setCommandPaletteOpen(true)}
         onOpenSettings={() => setSettingsModalOpen(true)}
       />
@@ -1686,6 +1865,23 @@ export const App: React.FC = () => {
         onToggleAutoSaveToDefault={() => setAutoSaveToDefault(prev => !prev)}
         filterMdOnly={filterMdOnly}
         onToggleFilterMdOnly={() => setFilterMdOnly(prev => !prev)}
+        historySettings={historySettings}
+        historyStats={historyStats}
+        onUpdateHistorySettings={handleUpdateHistorySettings}
+        onClearAllHistory={handleClearAllHistory}
+      />
+
+      {/* Version History Modal */}
+      <HistoryModal
+        isOpen={historyModalOpen}
+        initialTab={historyModalInitialTab}
+        activeFilePath={activeTab?.filePath}
+        activeFileTitle={activeTab?.title}
+        activeContent={activeTab ? activeTab.content : ''}
+        onClose={() => setHistoryModalOpen(false)}
+        onRestored={handleHistoryRestored}
+        onOpenCopy={handleHistoryOpenCopy}
+        onRecovered={handleHistoryRecovered}
       />
 
       {/* Unsaved Workspace / Window Changes Modal (Task 2) */}

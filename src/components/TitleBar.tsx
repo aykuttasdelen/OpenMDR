@@ -12,7 +12,8 @@ import {
   Share2, 
   Command,
   Settings as SettingsIcon,
-  ScanText
+  ScanText,
+  History
 } from 'lucide-react';
 import { ViewMode, ThemeMode } from '../types/electron';
 import { useTranslation } from '../i18n/LanguageContext';
@@ -31,6 +32,7 @@ interface TitleBarProps {
   onSaveFile: () => void;
   onOpenExport: () => void;
   onOpenOCR?: () => void;
+  onOpenHistory?: () => void;
   onOpenCommandPalette: () => void;
   onOpenSettings: () => void;
 }
@@ -49,6 +51,7 @@ export const TitleBar: React.FC<TitleBarProps> = React.memo(({
   onSaveFile,
   onOpenExport,
   onOpenOCR,
+  onOpenHistory,
   onOpenCommandPalette,
   onOpenSettings
 }) => {
@@ -164,6 +167,17 @@ export const TitleBar: React.FC<TitleBarProps> = React.memo(({
             title={t('titlebar.ocr')}
           >
             <ScanText size={16} />
+          </button>
+        )}
+
+        {/* Version History */}
+        {onOpenHistory && (
+          <button
+            className="btn-icon"
+            onClick={onOpenHistory}
+            title={t('titlebar.history')}
+          >
+            <History size={16} />
           </button>
         )}
 
