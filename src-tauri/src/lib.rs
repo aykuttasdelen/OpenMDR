@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod drive_auth;
+pub mod drive_client;
 pub mod history_store;
 pub mod menu;
 pub mod models;
