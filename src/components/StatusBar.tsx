@@ -1,7 +1,25 @@
 import React from 'react';
-import { AlignLeft, Clock, FileCode, Type, CheckCircle2, CircleDashed, ZoomIn, ZoomOut } from 'lucide-react';
+import {
+  AlertCircle,
+  AlignLeft,
+  CheckCircle2,
+  CircleDashed,
+  Clock,
+  CloudAlert,
+  CloudCheck,
+  CloudOff,
+  CloudUpload,
+  FileCode,
+  PauseCircle,
+  RefreshCw,
+  Type,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react';
 import { DocumentStats } from '../utils/markdownUtils';
 import { useTranslation } from '../i18n/LanguageContext';
+import type { DriveStatus, DriveSyncState } from '../types/electron';
+import { getDriveStatusTone, mapDriveErrorCode } from '../utils/driveUtils';
 
 interface StatusBarProps {
   stats: DocumentStats;
@@ -12,6 +30,59 @@ interface StatusBarProps {
   onZoomIn?: () => void;
   onZoomOut?: () => void;
   onResetZoom?: () => void;
+  driveStatus?: DriveStatus | null;
+  onOpenDriveSettings?: () => void;
+}
+
+function renderDriveIcon(state: DriveSyncState): React.ReactNode {
+  switch (state) {
+    case 'idle':
+      return <CloudCheck size={12} />;
+    case 'syncing':
+      return <RefreshCw size={12} className="drive-spin" />;
+    case 'pending':
+      return <CloudUpload size={12} />;
+    case 'paused':
+      return <PauseCircle size={12} />;
+    case 'offline':
+      return <CloudOff size={12} />;
+    case 'auth_required':
+      return <CloudAlert size={12} />;
+    case 'error':
+      return <AlertCircle size={12} />;
+    case 'disconnected':
+    default:
+      return <CloudOff size={12} />;
+  }
+}
+
+function getDriveLabel(
+  driveStatus: DriveStatus,
+  t: (key: string, params?: Record<string, string | number>) => string
+): string {
+  switch (driveStatus.state) {
+    case 'idle':
+      return t('status.driveIdle');
+    case 'syncing':
+      return driveStatus.pendingCount > 0
+        ? `${t('status.driveSyncing')} (${driveStatus.pendingCount})`
+        : t('status.driveSyncing');
+    case 'pending':
+      return t('status.drivePending', { count: driveStatus.pendingCount });
+    case 'paused':
+      return t('status.drivePaused');
+    case 'offline':
+      return driveStatus.pendingCount > 0
+        ? `${t('status.driveOffline')} (${driveStatus.pendingCount})`
+        : t('status.driveOffline');
+    case 'auth_required':
+      return t('status.driveAuthRequired');
+    case 'error':
+      return t('status.driveError');
+    case 'disconnected':
+    default:
+      return t('status.driveDisconnected');
+  }
 }
 
 export const StatusBar: React.FC<StatusBarProps> = React.memo(({ 
@@ -22,9 +93,27 @@ export const StatusBar: React.FC<StatusBarProps> = React.memo(({
   onToggleAutoSave,
   onZoomIn,
   onZoomOut,
-  onResetZoom
+  onResetZoom,
+  driveStatus,
+  onOpenDriveSettings,
 }) => {
   const { t } = useTranslation();
+
+  const driveTone = driveStatus ? getDriveStatusTone(driveStatus.state) : null;
+  const driveLabel = driveStatus ? getDriveLabel(driveStatus, t) : '';
+  const driveErrorHint =
+    driveStatus &&
+    driveStatus.lastError &&
+    (driveStatus.state === 'error' ||
+      driveStatus.state === 'offline' ||
+      driveStatus.state === 'auth_required')
+      ? mapDriveErrorCode(driveStatus.lastError, t)
+      : '';
+  const driveTooltip = driveStatus
+    ? driveErrorHint
+      ? `${t('status.driveTooltip', { status: driveLabel })} (${driveErrorHint})`
+      : t('status.driveTooltip', { status: driveLabel })
+    : '';
 
   return (
     <footer className="status-bar">
@@ -47,6 +136,20 @@ export const StatusBar: React.FC<StatusBarProps> = React.memo(({
       </div>
 
       <div className="status-bar-right">
+        {driveStatus != null && driveTone != null && (
+          <button
+            type="button"
+            className={`status-bar-cloud-btn status-bar-cloud-btn--${driveTone}`}
+            onClick={onOpenDriveSettings}
+            title={driveTooltip}
+            aria-label={driveTooltip}
+            style={{ cursor: onOpenDriveSettings ? 'pointer' : 'default' }}
+          >
+            {renderDriveIcon(driveStatus.state)}
+            <span>{driveLabel}</span>
+          </button>
+        )}
+
         {onToggleAutoSave && (
           <button 
             className="status-bar-btn"

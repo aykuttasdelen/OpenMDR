@@ -13,14 +13,50 @@ import {
   Trash2, 
   FileText,
   Sliders,
-  History
+  History,
+  Cloud,
+  CloudOff,
+  CloudCheck,
+  CloudUpload,
+  CloudAlert,
+  PauseCircle,
+  AlertCircle,
+  AlertTriangle,
+  RefreshCw,
+  Loader2,
+  KeyRound,
+  ShieldCheck,
+  ChevronDown,
+  ChevronRight,
+  FolderDown,
+  Unplug,
+  Plug
 } from 'lucide-react';
 import { useTranslation } from '../i18n/LanguageContext';
-import { HistorySettings, HistoryStats, ThemeMode } from '../types/electron';
-import { clampHistorySettings, formatByteSize } from '../utils/historyUtils';
+import {
+  DriveSettings,
+  DriveStatus,
+  DriveSyncState,
+  HistorySettings,
+  HistoryStats,
+  ThemeMode,
+} from '../types/electron';
+import {
+  clampHistorySettings,
+  formatByteSize,
+  formatRelativeTimestamp,
+} from '../utils/historyUtils';
+import {
+  clampDriveSettings,
+  getDriveStatusTone,
+  mapDriveErrorCode,
+} from '../utils/driveUtils';
+
+export type TabType = 'general' | 'files' | 'editor' | 'cloud' | 'about';
 
 export interface SettingsModalProps {
   isOpen: boolean;
+  initialTab?: TabType;
   onClose: () => void;
   theme: ThemeMode;
   onThemeChange: (theme: ThemeMode) => void;
@@ -40,9 +76,16 @@ export interface SettingsModalProps {
   historyStats?: HistoryStats | null;
   onUpdateHistorySettings?: (next: HistorySettings) => Promise<void>;
   onClearAllHistory?: () => Promise<void>;
+  driveStatus?: DriveStatus | null;
+  onDriveConnect?: () => Promise<void>;
+  onDriveCancelAuth?: () => Promise<void>;
+  onDriveDisconnect?: () => Promise<void>;
+  onDriveSyncNow?: () => Promise<void>;
+  onDriveUpdateSettings?: (settings: DriveSettings) => Promise<void>;
+  onDriveSaveCustomOAuth?: (clientId: string, clientSecret: string | null) => Promise<void>;
+  onDriveClearCustomOAuth?: () => Promise<void>;
+  onOpenDriveRestore?: () => void;
 }
-
-type TabType = 'general' | 'files' | 'editor' | 'about';
 
 const DEFAULT_HISTORY_SETTINGS: HistorySettings = {
   enabled: true,
@@ -50,8 +93,80 @@ const DEFAULT_HISTORY_SETTINGS: HistorySettings = {
   autosaveIntervalMinutes: 3,
 };
 
+const DEFAULT_DRIVE_STATUS: DriveStatus = {
+  state: 'disconnected',
+  connected: false,
+  accountEmail: null,
+  rootFolderId: null,
+  settings: {
+    enabled: true,
+    syncIntervalMinutes: 5,
+    idleDelaySeconds: 30,
+  },
+  pendingCount: 0,
+  syncedCount: 0,
+  lastSyncAt: null,
+  lastError: null,
+  authInProgress: false,
+  authConfig: {
+    hasBuiltInClient: false,
+    usingCustomClient: false,
+    customClientId: '',
+    hasCustomClientSecret: false,
+  },
+};
+
 const MAX_VERSIONS_PRESETS = [20, 50, 100, 200] as const;
 const AUTOSAVE_INTERVAL_OPTIONS = [1, 3, 5, 10, 15, 30] as const;
+const DRIVE_IDLE_DELAY_OPTIONS = [15, 30, 60, 120] as const;
+const DRIVE_SYNC_INTERVAL_OPTIONS = [1, 3, 5, 10, 15, 30] as const;
+
+function getDriveBadgeLabel(
+  driveStatus: DriveStatus,
+  t: (key: string, params?: Record<string, string | number>) => string
+): string {
+  switch (driveStatus.state) {
+    case 'idle':
+      return t('status.driveIdle');
+    case 'syncing':
+      return t('status.driveSyncing');
+    case 'pending':
+      return t('status.drivePending', { count: driveStatus.pendingCount });
+    case 'paused':
+      return t('status.drivePaused');
+    case 'offline':
+      return t('status.driveOffline');
+    case 'auth_required':
+      return t('status.driveAuthRequired');
+    case 'error':
+      return t('status.driveError');
+    case 'disconnected':
+    default:
+      return t('status.driveDisconnected');
+  }
+}
+
+function renderDriveBadgeIcon(state: DriveSyncState): React.ReactNode {
+  switch (state) {
+    case 'idle':
+      return <CloudCheck size={12} />;
+    case 'syncing':
+      return <RefreshCw size={12} className="drive-spin" />;
+    case 'pending':
+      return <CloudUpload size={12} />;
+    case 'paused':
+      return <PauseCircle size={12} />;
+    case 'offline':
+      return <CloudOff size={12} />;
+    case 'auth_required':
+      return <CloudAlert size={12} />;
+    case 'error':
+      return <AlertCircle size={12} />;
+    case 'disconnected':
+    default:
+      return <CloudOff size={12} />;
+  }
+}
 
 function formatErrorMessage(err: unknown): string {
   if (err instanceof Error && err.message) {
@@ -65,6 +180,7 @@ function formatErrorMessage(err: unknown): string {
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
+  initialTab,
   onClose,
   theme,
   onThemeChange,
@@ -83,10 +199,41 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   historySettings,
   historyStats,
   onUpdateHistorySettings,
-  onClearAllHistory
+  onClearAllHistory,
+  driveStatus,
+  onDriveConnect,
+  onDriveCancelAuth,
+  onDriveDisconnect,
+  onDriveSyncNow,
+  onDriveUpdateSettings,
+  onDriveSaveCustomOAuth,
+  onDriveClearCustomOAuth,
+  onOpenDriveRestore,
 }) => {
   const { language, setLanguage, t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<TabType>('general');
+
+  const hasDriveSupport = Boolean(
+    driveStatus ||
+      onDriveConnect ||
+      onDriveCancelAuth ||
+      onDriveDisconnect ||
+      onDriveSyncNow ||
+      onDriveUpdateSettings ||
+      onDriveSaveCustomOAuth ||
+      onDriveClearCustomOAuth ||
+      onOpenDriveRestore
+  );
+
+  const currentDriveStatus = driveStatus ?? DEFAULT_DRIVE_STATUS;
+  const driveSettings = currentDriveStatus.settings;
+  const authConfig = currentDriveStatus.authConfig;
+  const isDriveNotConfigured =
+    !authConfig.hasBuiltInClient && !authConfig.usingCustomClient;
+
+  const [activeTab, setActiveTab] = useState<TabType>(() => {
+    const requested = initialTab ?? 'general';
+    return requested === 'cloud' && !hasDriveSupport ? 'general' : requested;
+  });
 
   const currentHistorySettings = historySettings ?? DEFAULT_HISTORY_SETTINGS;
   const [maxVersionsDraft, setMaxVersionsDraft] = useState<string>(
@@ -98,8 +245,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     message: string;
   } | null>(null);
 
+  const [cloudBusy, setCloudBusy] = useState(false);
+  const [cloudConnectPending, setCloudConnectPending] = useState(false);
+  const [cloudFeedback, setCloudFeedback] = useState<{
+    kind: 'success' | 'error';
+    message: string;
+  } | null>(null);
+  const [byoExpanded, setByoExpanded] = useState(isDriveNotConfigured);
+  const [clientIdDraft, setClientIdDraft] = useState(authConfig.customClientId);
+  const [clientSecretDraft, setClientSecretDraft] = useState('');
+
   const isMountedRef = useRef(true);
   const historyBusyRef = useRef(false);
+  const cloudBusyRef = useRef(false);
+  const cloudConnectPendingRef = useRef(false);
   const openSessionRef = useRef(0);
 
   useEffect(() => {
@@ -112,9 +271,32 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   useEffect(() => {
     openSessionRef.current += 1;
     if (!isOpen) {
+      cloudConnectPendingRef.current = false;
       setHistoryFeedback(null);
+      setCloudFeedback(null);
+      setCloudConnectPending(false);
+      setClientSecretDraft('');
+      setByoExpanded(false);
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const requested = initialTab ?? 'general';
+    setActiveTab(requested === 'cloud' && !hasDriveSupport ? 'general' : requested);
+  }, [isOpen, initialTab, hasDriveSupport]);
+
+  useEffect(() => {
+    if (isOpen) {
+      setClientIdDraft(authConfig.customClientId);
+    }
+  }, [isOpen, authConfig.customClientId]);
+
+  useEffect(() => {
+    if (isOpen && isDriveNotConfigured) {
+      setByoExpanded(true);
+    }
+  }, [isOpen, isDriveNotConfigured]);
 
   useEffect(() => {
     setMaxVersionsDraft(String(currentHistorySettings.maxVersionsPerFile));
@@ -245,6 +427,165 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
+  const isAuthInProgress = currentDriveStatus.authInProgress || cloudConnectPending;
+  const canMutateDrive = !cloudBusy && !isAuthInProgress;
+  const driveTone = getDriveStatusTone(currentDriveStatus.state);
+  const driveBadgeLabel = getDriveBadgeLabel(currentDriveStatus, t);
+  const driveLastSyncLabel = currentDriveStatus.lastSyncAt
+    ? formatRelativeTimestamp(currentDriveStatus.lastSyncAt, language)
+    : t('settings.cloudLastSyncNever');
+
+  const driveIdleDelayOptions = DRIVE_IDLE_DELAY_OPTIONS.includes(
+    driveSettings.idleDelaySeconds as (typeof DRIVE_IDLE_DELAY_OPTIONS)[number]
+  )
+    ? [...DRIVE_IDLE_DELAY_OPTIONS]
+    : [...DRIVE_IDLE_DELAY_OPTIONS, driveSettings.idleDelaySeconds].sort((a, b) => a - b);
+
+  const driveSyncIntervalOptions = DRIVE_SYNC_INTERVAL_OPTIONS.includes(
+    driveSettings.syncIntervalMinutes as (typeof DRIVE_SYNC_INTERVAL_OPTIONS)[number]
+  )
+    ? [...DRIVE_SYNC_INTERVAL_OPTIONS]
+    : [...DRIVE_SYNC_INTERVAL_OPTIONS, driveSettings.syncIntervalMinutes].sort((a, b) => a - b);
+
+  const runCloudAction = async (
+    action: () => Promise<void>,
+    onSuccess?: () => void
+  ) => {
+    if (cloudBusyRef.current) return;
+    const sessionId = openSessionRef.current;
+
+    cloudBusyRef.current = true;
+    setCloudBusy(true);
+    setCloudFeedback(null);
+    try {
+      await action();
+      if (isMountedRef.current && sessionId === openSessionRef.current) {
+        onSuccess?.();
+      }
+    } catch (err) {
+      if (isMountedRef.current && sessionId === openSessionRef.current) {
+        setCloudFeedback({
+          kind: 'error',
+          message: mapDriveErrorCode(err, t),
+        });
+      }
+    } finally {
+      cloudBusyRef.current = false;
+      if (isMountedRef.current) {
+        setCloudBusy(false);
+      }
+    }
+  };
+
+  const handleDriveConnect = async () => {
+    if (!onDriveConnect || cloudConnectPendingRef.current || cloudBusyRef.current) return;
+    const sessionId = openSessionRef.current;
+    cloudConnectPendingRef.current = true;
+    setCloudConnectPending(true);
+    setCloudFeedback(null);
+    try {
+      await onDriveConnect();
+    } catch (err) {
+      if (isMountedRef.current && sessionId === openSessionRef.current) {
+        setCloudFeedback({
+          kind: 'error',
+          message: mapDriveErrorCode(err, t),
+        });
+      }
+    } finally {
+      cloudConnectPendingRef.current = false;
+      if (isMountedRef.current) {
+        setCloudConnectPending(false);
+      }
+    }
+  };
+
+  const handleDriveCancelAuth = async () => {
+    if (!onDriveCancelAuth) return;
+    const sessionId = openSessionRef.current;
+    try {
+      await onDriveCancelAuth();
+    } catch (err) {
+      if (isMountedRef.current && sessionId === openSessionRef.current) {
+        setCloudFeedback({
+          kind: 'error',
+          message: mapDriveErrorCode(err, t),
+        });
+      }
+    }
+  };
+
+  const handleDriveDisconnect = () => {
+    if (!onDriveDisconnect || cloudBusyRef.current) return;
+    if (!window.confirm(t('settings.cloudDisconnectConfirm'))) return;
+    void runCloudAction(onDriveDisconnect);
+  };
+
+  const handleDriveSyncNow = () => {
+    if (!onDriveSyncNow) return;
+    void runCloudAction(onDriveSyncNow);
+  };
+
+  const handleDriveToggleAutoEnabled = () => {
+    if (!onDriveUpdateSettings) return;
+    const clamped = clampDriveSettings({
+      ...driveSettings,
+      enabled: !driveSettings.enabled,
+    });
+    void runCloudAction(() => onDriveUpdateSettings(clamped));
+  };
+
+  const handleDriveIdleDelayChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    if (!onDriveUpdateSettings) return;
+    const parsed = Number(e.target.value);
+    if (!Number.isFinite(parsed)) return;
+    const clamped = clampDriveSettings({
+      ...driveSettings,
+      idleDelaySeconds: parsed,
+    });
+    if (clamped.idleDelaySeconds !== driveSettings.idleDelaySeconds) {
+      void runCloudAction(() => onDriveUpdateSettings(clamped));
+    }
+  };
+
+  const handleDriveSyncIntervalChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    if (!onDriveUpdateSettings) return;
+    const parsed = Number(e.target.value);
+    if (!Number.isFinite(parsed)) return;
+    const clamped = clampDriveSettings({
+      ...driveSettings,
+      syncIntervalMinutes: parsed,
+    });
+    if (clamped.syncIntervalMinutes !== driveSettings.syncIntervalMinutes) {
+      void runCloudAction(() => onDriveUpdateSettings(clamped));
+    }
+  };
+
+  const handleSaveCustomOAuth = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmedId = clientIdDraft.trim();
+    if (!onDriveSaveCustomOAuth || !trimmedId) return;
+    const secretToSave = clientSecretDraft.trim() ? clientSecretDraft.trim() : null;
+    void runCloudAction(
+      () => onDriveSaveCustomOAuth(trimmedId, secretToSave),
+      () => {
+        setClientSecretDraft('');
+        setCloudFeedback({
+          kind: 'success',
+          message: t('settings.cloudSavedOAuth'),
+        });
+      }
+    );
+  };
+
+  const handleClearCustomOAuth = () => {
+    if (!onDriveClearCustomOAuth) return;
+    void runCloudAction(onDriveClearCustomOAuth, () => {
+      setClientIdDraft('');
+      setClientSecretDraft('');
+    });
+  };
+
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div 
@@ -281,7 +622,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           borderBottom: '1px solid var(--border-subtle)',
           padding: '0 16px',
           background: 'var(--bg-sidebar)',
-          gap: 6
+          gap: 6,
+          overflowX: 'auto'
         }}>
           <button
             className={`settings-tab-btn ${activeTab === 'general' ? 'active' : ''}`}
@@ -304,6 +646,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <Type size={14} />
             <span>{t('settings.tabEditor')}</span>
           </button>
+          {hasDriveSupport && (
+            <button
+              className={`settings-tab-btn ${activeTab === 'cloud' ? 'active' : ''}`}
+              onClick={() => setActiveTab('cloud')}
+            >
+              <Cloud size={14} />
+              <span>{t('settings.tabCloud')}</span>
+            </button>
+          )}
           <button
             className={`settings-tab-btn ${activeTab === 'about' ? 'active' : ''}`}
             onClick={() => setActiveTab('about')}
@@ -732,6 +1083,346 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     {fontSize}px
                   </span>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* CLOUD BACKUP TAB */}
+          {activeTab === 'cloud' && hasDriveSupport && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {/* Connection & Status Card */}
+              <div className="cloud-card">
+                <div className="cloud-card-header">
+                  <div className="settings-info">
+                    <div className="cloud-card-title-row">
+                      <Cloud size={16} color="var(--accent-primary)" />
+                      <div className="settings-label">{t('settings.cloudTitle')}</div>
+                    </div>
+                    <div className="settings-desc">{t('settings.cloudDesc')}</div>
+                  </div>
+                  <span className={`cloud-status-badge cloud-status-badge--${driveTone}`}>
+                    {renderDriveBadgeIcon(currentDriveStatus.state)}
+                    <span>{driveBadgeLabel}</span>
+                  </span>
+                </div>
+
+                {isDriveNotConfigured && (
+                  <div className="cloud-banner cloud-banner--warning" role="status">
+                    <AlertTriangle size={15} />
+                    <span>{t('settings.cloudNotConfiguredBanner')}</span>
+                  </div>
+                )}
+
+                {isAuthInProgress ? (
+                  <div className="cloud-account-box">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <Loader2 size={15} className="drive-spin" color="var(--accent-primary)" />
+                      <span>{t('settings.cloudConnecting')}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn-secondary btn-danger-ghost"
+                      onClick={handleDriveCancelAuth}
+                      disabled={!onDriveCancelAuth}
+                    >
+                      <X size={14} />
+                      <span>{t('settings.cloudCancelAuth')}</span>
+                    </button>
+                  </div>
+                ) : currentDriveStatus.connected ? (
+                  <>
+                    <div className="cloud-account-box">
+                      <span style={{ fontWeight: 500 }}>
+                        {currentDriveStatus.accountEmail || 'Google Drive'}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn-secondary btn-danger-ghost"
+                        onClick={handleDriveDisconnect}
+                        disabled={!onDriveDisconnect || cloudBusy}
+                      >
+                        <Unplug size={14} />
+                        <span>{t('settings.cloudDisconnect')}</span>
+                      </button>
+                    </div>
+
+                    <div className="cloud-actions-row">
+                      <div className="cloud-actions-group">
+                        {currentDriveStatus.state === 'auth_required' && (
+                          <button
+                            type="button"
+                            className="btn-primary"
+                            onClick={handleDriveConnect}
+                            disabled={!onDriveConnect || cloudBusy}
+                          >
+                            <Plug size={14} />
+                            <span>{t('settings.cloudReconnect')}</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className={
+                            currentDriveStatus.state === 'auth_required'
+                              ? 'btn-secondary'
+                              : 'btn-primary'
+                          }
+                          onClick={handleDriveSyncNow}
+                          disabled={!onDriveSyncNow || cloudBusy}
+                        >
+                          <RefreshCw
+                            size={14}
+                            className={
+                              currentDriveStatus.state === 'syncing' ? 'drive-spin' : undefined
+                            }
+                          />
+                          <span>{t('settings.cloudSyncNow')}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary"
+                          onClick={onOpenDriveRestore}
+                          disabled={!onOpenDriveRestore || cloudBusy}
+                        >
+                          <FolderDown size={14} />
+                          <span>{t('settings.cloudRestore')}</span>
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="cloud-actions-row">
+                    <button
+                      type="button"
+                      className="btn-primary"
+                      onClick={handleDriveConnect}
+                      disabled={!onDriveConnect || cloudBusy}
+                    >
+                      <Plug size={14} />
+                      <span>{t('settings.cloudConnect')}</span>
+                    </button>
+                  </div>
+                )}
+
+                <div className="cloud-stats-row">
+                  <span>
+                    {t('settings.cloudStats', {
+                      synced: currentDriveStatus.syncedCount,
+                      pending: currentDriveStatus.pendingCount,
+                      lastSync: driveLastSyncLabel,
+                    })}
+                  </span>
+                </div>
+
+                <div className="cloud-scope-note">
+                  <ShieldCheck size={14} />
+                  <span>{t('settings.cloudScopeNote')}</span>
+                </div>
+
+                {currentDriveStatus.lastError &&
+                  !cloudFeedback &&
+                  (currentDriveStatus.state === 'error' ||
+                    currentDriveStatus.state === 'offline' ||
+                    currentDriveStatus.state === 'auth_required') && (
+                    <div className="cloud-banner cloud-banner--error" role="alert">
+                      <AlertCircle size={15} />
+                      <span>{mapDriveErrorCode(currentDriveStatus.lastError, t)}</span>
+                    </div>
+                  )}
+
+                {cloudFeedback && (
+                  <div
+                    className={`cloud-banner ${
+                      cloudFeedback.kind === 'error'
+                        ? 'cloud-banner--error'
+                        : 'cloud-banner--success'
+                    }`}
+                    role={cloudFeedback.kind === 'error' ? 'alert' : 'status'}
+                  >
+                    {cloudFeedback.kind === 'error' ? (
+                      <AlertCircle size={15} />
+                    ) : (
+                      <Check size={15} />
+                    )}
+                    <span>{cloudFeedback.message}</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Auto-Backup Settings Card */}
+              <div className="cloud-card">
+                <div className="cloud-setting-row">
+                  <div className="settings-info" style={{ flex: '1 1 240px' }}>
+                    <div className="settings-label">{t('settings.cloudAutoEnabled')}</div>
+                    <div className="settings-desc">{t('settings.cloudAutoEnabledDesc')}</div>
+                  </div>
+                  <label className="toggle-switch">
+                    <input
+                      type="checkbox"
+                      aria-label={t('settings.cloudAutoEnabled')}
+                      checked={driveSettings.enabled}
+                      onChange={handleDriveToggleAutoEnabled}
+                      disabled={!onDriveUpdateSettings || !canMutateDrive}
+                    />
+                    <span className="toggle-slider" />
+                  </label>
+                </div>
+
+                <div className="cloud-setting-row">
+                  <div className="settings-info" style={{ flex: '1 1 240px' }}>
+                    <div className="settings-label">{t('settings.cloudIdleDelay')}</div>
+                    <div className="settings-desc">{t('settings.cloudIdleDelayDesc')}</div>
+                  </div>
+                  <select
+                    className="cloud-select"
+                    aria-label={t('settings.cloudIdleDelay')}
+                    value={driveSettings.idleDelaySeconds}
+                    onChange={handleDriveIdleDelayChange}
+                    disabled={!onDriveUpdateSettings || !canMutateDrive}
+                  >
+                    {driveIdleDelayOptions.map(sec => (
+                      <option key={sec} value={sec}>
+                        {t('settings.cloudSeconds', { count: sec })}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="cloud-setting-row">
+                  <div className="settings-info" style={{ flex: '1 1 240px' }}>
+                    <div className="settings-label">{t('settings.cloudSyncInterval')}</div>
+                    <div className="settings-desc">{t('settings.cloudSyncIntervalDesc')}</div>
+                  </div>
+                  <select
+                    className="cloud-select"
+                    aria-label={t('settings.cloudSyncInterval')}
+                    value={driveSettings.syncIntervalMinutes}
+                    onChange={handleDriveSyncIntervalChange}
+                    disabled={!onDriveUpdateSettings || !canMutateDrive}
+                  >
+                    {driveSyncIntervalOptions.map(min => (
+                      <option key={min} value={min}>
+                        {t('settings.cloudMinutes', { count: min })}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Advanced: BYO OAuth Client Accordion */}
+              <div className="cloud-accordion">
+                <button
+                  type="button"
+                  className="cloud-accordion-trigger"
+                  aria-expanded={byoExpanded}
+                  onClick={() => setByoExpanded(prev => !prev)}
+                >
+                  <span className="cloud-accordion-trigger-left">
+                    <KeyRound size={15} color="var(--accent-primary)" />
+                    <span>{t('settings.cloudByoTitle')}</span>
+                  </span>
+                  {byoExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                </button>
+
+                {byoExpanded && (
+                  <form className="cloud-accordion-body" onSubmit={handleSaveCustomOAuth}>
+                    <div className="settings-desc">{t('settings.cloudByoDesc')}</div>
+
+                    <ol className="cloud-steps">
+                      {language === 'tr' ? (
+                        <>
+                          <li>
+                            Google Cloud Console'da bir proje oluşturup{' '}
+                            <strong>Google Drive API</strong>'yi etkinleştirin.
+                          </li>
+                          <li>
+                            <strong>Credentials → Create Credentials → OAuth client ID</strong>{' '}
+                            menüsünden uygulama türünü <strong>Desktop app</strong> seçin.
+                          </li>
+                          <li>
+                            Oluşturulan <strong>Client ID</strong> (ve varsa{' '}
+                            <strong>Client Secret</strong>) değerini aşağıya yapıştırıp kaydedin.
+                          </li>
+                        </>
+                      ) : (
+                        <>
+                          <li>
+                            Create a project in Google Cloud Console and enable the{' '}
+                            <strong>Google Drive API</strong>.
+                          </li>
+                          <li>
+                            Under <strong>Credentials → Create Credentials → OAuth client ID</strong>,
+                            choose <strong>Desktop app</strong>.
+                          </li>
+                          <li>
+                            Paste your <strong>Client ID</strong> (and optional{' '}
+                            <strong>Client Secret</strong>) below and save.
+                          </li>
+                        </>
+                      )}
+                    </ol>
+
+                    <div className="cloud-field">
+                      <label className="cloud-field-label" htmlFor="drive-byo-client-id">
+                        {t('settings.cloudClientId')}
+                      </label>
+                      <input
+                        id="drive-byo-client-id"
+                        type="text"
+                        className="cloud-input"
+                        value={clientIdDraft}
+                        onChange={e => setClientIdDraft(e.target.value)}
+                        placeholder="1234567890-abc.apps.googleusercontent.com"
+                        disabled={!canMutateDrive}
+                      />
+                    </div>
+
+                    <div className="cloud-field">
+                      <label className="cloud-field-label" htmlFor="drive-byo-client-secret">
+                        {t('settings.cloudClientSecret')}
+                      </label>
+                      <input
+                        id="drive-byo-client-secret"
+                        type="password"
+                        className="cloud-input"
+                        value={clientSecretDraft}
+                        onChange={e => setClientSecretDraft(e.target.value)}
+                        placeholder={
+                          authConfig.hasCustomClientSecret && !clientSecretDraft
+                            ? t('settings.cloudClientSecretPlaceholderSaved')
+                            : ''
+                        }
+                        disabled={!canMutateDrive}
+                      />
+                    </div>
+
+                    <div className="cloud-actions-row">
+                      <div className="cloud-actions-group">
+                        <button
+                          type="submit"
+                          className="btn-primary"
+                          disabled={
+                            !onDriveSaveCustomOAuth || !clientIdDraft.trim() || !canMutateDrive
+                          }
+                        >
+                          <Check size={14} />
+                          <span>{t('settings.cloudSaveOAuth')}</span>
+                        </button>
+                        {(authConfig.usingCustomClient ||
+                          Boolean(authConfig.customClientId)) && (
+                          <button
+                            type="button"
+                            className="btn-secondary btn-danger-ghost"
+                            onClick={handleClearCustomOAuth}
+                            disabled={!onDriveClearCustomOAuth || !canMutateDrive}
+                          >
+                            <Trash2 size={14} />
+                            <span>{t('settings.cloudClearOAuth')}</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </form>
+                )}
               </div>
             </div>
           )}
