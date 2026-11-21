@@ -754,7 +754,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <div>
                 <h2 style={{ fontSize: 20, fontWeight: 700, margin: '4px 0' }}>OpenMD</h2>
                 <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>
-                  {t('settings.aboutVersion')} 1.1.0
+                  {t('settings.aboutVersion')} 1.2.0
                 </div>
               </div>
               <p style={{ fontSize: 13.5, color: 'var(--text-secondary)', maxWidth: 420, lineHeight: 1.5 }}>

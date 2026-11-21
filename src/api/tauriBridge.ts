@@ -225,7 +225,7 @@ export const tauriAPI = {
   },
 
   getAppVersion: async (): Promise<string> => {
-    return '1.1.0';
+    return '1.2.0';
   },
 
   getDocumentsDir: async (): Promise<string> => {
