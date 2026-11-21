@@ -250,7 +250,7 @@ export const DriveRestoreModal: React.FC<DriveRestoreModalProps> = ({
   };
 
   const handleSelectFile = (fileId: string) => {
-    if (fileId === effectiveSelectedFileId) return;
+    if (isBusy || fileId === effectiveSelectedFileId) return;
     setError(null);
     setPreviewContent(null);
     setSelectedFileId(fileId);
@@ -455,6 +455,7 @@ export const DriveRestoreModal: React.FC<DriveRestoreModalProps> = ({
                     type="button"
                     className="btn-icon"
                     onClick={() => setSearchQuery('')}
+                    disabled={isBusy}
                     style={{ width: 20, height: 20 }}
                     aria-label={t('settings.clear')}
                   >
@@ -519,10 +520,14 @@ export const DriveRestoreModal: React.FC<DriveRestoreModalProps> = ({
                 <div className="history-empty-desc">{t('driveRestore.loading')}</div>
               </div>
             ) : files.length === 0 ? (
-              <div className="history-empty-state">
-                <Cloud size={34} />
-                <div className="history-empty-title">{t('driveRestore.empty')}</div>
-              </div>
+              !error ? (
+                <div className="history-empty-state">
+                  <Cloud size={34} />
+                  <div className="history-empty-title">{t('driveRestore.empty')}</div>
+                </div>
+              ) : (
+                <div style={{ flex: 1 }} />
+              )
             ) : (
               <div className="drive-restore-body">
                 {/* Left Sidebar: File List */}
@@ -557,6 +562,7 @@ export const DriveRestoreModal: React.FC<DriveRestoreModalProps> = ({
                             key={file.fileId}
                             role="option"
                             aria-selected={isSelected}
+                            disabled={isBusy}
                             className={`drive-restore-item ${isSelected ? 'selected' : ''}`}
                             onClick={() => handleSelectFile(file.fileId)}
                             title={file.remotePath}

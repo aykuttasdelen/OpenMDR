@@ -483,19 +483,33 @@ impl DriveManager {
             }
         };
 
-        self.reset_runtime_session_state();
-
-        self.store
-            .set_drive_setting_str("drive_account_email", &email)
-            .map_err(AuthError::Other)?;
-        let mut settings = self.store.get_drive_settings().map_err(AuthError::Other)?;
-        settings.enabled = true;
-        self.store
-            .update_drive_settings(settings)
-            .map_err(AuthError::Other)?;
-
         {
             let _sync_guard = self.sync_lock.lock().await;
+            let prior_email_raw = self
+                .store
+                .get_drive_setting_str("drive_account_email")
+                .map_err(AuthError::Other)?;
+            let prior_email = prior_email_raw.trim();
+            let next_email = email.trim();
+            if !prior_email.is_empty()
+                && (next_email.is_empty() || !prior_email.eq_ignore_ascii_case(next_email))
+            {
+                self.store
+                    .clear_all_drive_cache()
+                    .map_err(AuthError::Other)?;
+            }
+
+            self.reset_runtime_session_state();
+
+            self.store
+                .set_drive_setting_str("drive_account_email", next_email)
+                .map_err(AuthError::Other)?;
+            let mut settings = self.store.get_drive_settings().map_err(AuthError::Other)?;
+            settings.enabled = true;
+            self.store
+                .update_drive_settings(settings)
+                .map_err(AuthError::Other)?;
+
             let now_ms = current_unix_ms();
             match self.get_valid_access_token_typed().await {
                 Ok(access_token) => {
@@ -908,12 +922,16 @@ impl DriveManager {
 
         let active_guard = ActiveSyncGuard::enter(self);
         let stats = self.process_due_records(&due, None).await?;
+        let should_clear_error = stats.fatal_error.is_none()
+            && stats.skipped_invalid_count == 0
+            && (stats.uploaded_count > 0
+                || self
+                    .store
+                    .get_drive_summary()
+                    .is_ok_and(|s| s.pending_count == 0));
         if let Ok(mut rt) = self.runtime.lock() {
             rt.last_sweep_at = Some(Instant::now());
-            if stats.fatal_error.is_none()
-                && stats.skipped_invalid_count == 0
-                && stats.uploaded_count > 0
-            {
+            if should_clear_error {
                 rt.last_error_kind = None;
                 rt.last_error_message = None;
                 rt.backoff_until = None;
@@ -3039,5 +3057,239 @@ mod tests {
         );
 
         server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_reconnect_different_account_clears_stale_cache_and_uploads_to_new_account() {
+        let dir = tempdir().unwrap();
+        let server_state = Arc::new(Mutex::new(MockServerState::default()));
+        {
+            let mut guard = server_state.lock().unwrap();
+            guard.userinfo_email = "alice@example.com".to_string();
+            guard.token_body = r#"{"access_token":"alice-access","refresh_token":"alice-refresh","expires_in":3600,"token_type":"Bearer"}"#.to_string();
+        }
+        let (oauth_ep, drive_ep, server_handle) =
+            spawn_mock_google_server(Arc::clone(&server_state)).await;
+
+        let db_path = dir.path().join("history.db");
+        let store = Arc::new(HistoryStore::open(db_path).unwrap());
+        let token_store = Arc::new(MemoryTokenStore::new());
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let auth = Arc::new(
+            DriveAuthManager::new(
+                Arc::clone(&store),
+                token_store.clone(),
+                http.clone(),
+                oauth_ep,
+            )
+            .with_built_in_credentials(Some("builtin-client".into()), Some("builtin-sec".into())),
+        );
+        let client = DriveClient::with_endpoints(http, drive_ep);
+        let home_dir = dir.path().join("home");
+        fs::create_dir_all(home_dir.join("Documents")).unwrap();
+        let note_path = home_dir.join("Documents").join("shared.md");
+        fs::write(&note_path, "# Unchanged Content").unwrap();
+        let note_path_str = note_path.to_string_lossy().to_string();
+
+        let manager = DriveManager::new(store.clone(), auth, client, Some(home_dir));
+        let opener = |auth_url: &str| {
+            let parsed = auth_url.split_once('?').unwrap().1;
+            let params = parse_query(parsed);
+            let redirect_uri = params.get("redirect_uri").unwrap().clone();
+            let state = params.get("state").unwrap().clone();
+            let client = reqwest::Client::new();
+            tokio::spawn(async move {
+                let _ = client
+                    .get(format!("{redirect_uri}?code=test-code&state={state}"))
+                    .send()
+                    .await;
+            });
+            Ok(())
+        };
+
+        // 1. Alice connects and backs up shared.md.
+        let alice_status = manager
+            .connect_with_opener(None, vec![note_path_str.clone()], opener)
+            .await
+            .unwrap();
+        assert_eq!(
+            alice_status.account_email.as_deref(),
+            Some("alice@example.com")
+        );
+        let alice_root_id = alice_status.root_folder_id.clone().unwrap();
+
+        manager.sync_now(None, vec![]).await.unwrap();
+        let alice_rec = store.get_drive_file(&note_path_str).unwrap().unwrap();
+        let alice_file_id = alice_rec.drive_file_id.clone().unwrap();
+        let alice_docs_folder_id = store
+            .get_cached_folder_id("Documents")
+            .unwrap()
+            .expect("alice Documents folder should be cached");
+        assert!(!alice_rec.dirty);
+        assert!(alice_rec.last_synced_hash.is_some());
+
+        // 2. Enter auth_required and reconnect using a DIFFERENT Google account (bob@example.com)
+        //    whose Drive is completely empty, while shared.md remains unchanged on disk.
+        manager.mark_auth_required("INVALID_GRANT: revoked".to_string());
+        assert_eq!(
+            manager.get_status().unwrap().state,
+            DriveSyncState::AuthRequired
+        );
+
+        {
+            let mut guard = server_state.lock().unwrap();
+            guard.items.clear();
+            guard.requests.clear();
+            guard.userinfo_email = "bob@example.com".to_string();
+            guard.token_body = r#"{"access_token":"bob-access","refresh_token":"bob-refresh","expires_in":3600,"token_type":"Bearer"}"#.to_string();
+        }
+
+        let bob_status = manager
+            .connect_with_opener(None, vec![note_path_str.clone()], opener)
+            .await
+            .unwrap();
+        assert_eq!(bob_status.account_email.as_deref(), Some("bob@example.com"));
+        assert_ne!(bob_status.state, DriveSyncState::AuthRequired);
+        assert!(bob_status.last_error.is_none());
+        assert_ne!(
+            bob_status.root_folder_id.as_deref(),
+            Some(alice_root_id.as_str()),
+            "bob must resolve a fresh OpenMD root folder instead of reusing alice's root ID"
+        );
+        assert_ne!(
+            store.get_cached_folder_id("Documents").unwrap().as_deref(),
+            Some(alice_docs_folder_id.as_str()),
+            "alice's cached folder IDs must be cleared on account switch"
+        );
+
+        let rec_before_bob_sync = store
+            .get_drive_file(&note_path_str)
+            .unwrap()
+            .expect("shared.md should be freshly queued for bob");
+        assert!(
+            rec_before_bob_sync.dirty,
+            "unchanged file must be marked dirty for bob's account"
+        );
+        assert!(
+            rec_before_bob_sync.drive_file_id.is_none(),
+            "stale drive_file_id from alice must be cleared"
+        );
+
+        // Syncing uploads shared.md into bob's empty Drive.
+        let after_sync_status = manager.sync_now(None, vec![]).await.unwrap();
+        assert_eq!(after_sync_status.state, DriveSyncState::Idle);
+        let bob_remote_files = manager.list_remote_files().await.unwrap();
+        assert_eq!(bob_remote_files.len(), 1);
+        assert_eq!(bob_remote_files[0].remote_path, "Documents/shared.md");
+        assert_ne!(bob_remote_files[0].file_id, alice_file_id);
+        assert_eq!(
+            manager
+                .download_file_content(&bob_remote_files[0].file_id)
+                .await
+                .unwrap(),
+            "# Unchanged Content"
+        );
+
+        // 3. Reconnecting with the SAME account (case-insensitive) preserves cache & skips re-upload.
+        let bob_file_id = bob_remote_files[0].file_id.clone();
+        {
+            let mut guard = server_state.lock().unwrap();
+            guard.userinfo_email = "Bob@example.com".to_string();
+        }
+        manager
+            .connect_with_opener(None, vec![note_path_str.clone()], opener)
+            .await
+            .unwrap();
+        let rec_same_account = store.get_drive_file(&note_path_str).unwrap().unwrap();
+        assert!(!rec_same_account.dirty);
+        assert_eq!(
+            rec_same_account.drive_file_id.as_deref(),
+            Some(bob_file_id.as_str())
+        );
+
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_background_sweep_clears_stale_error_when_pending_drops_to_zero() {
+        // (a) Reverting a failing file back to its last_synced_hash clears Error -> Idle.
+        let dir1 = tempdir().unwrap();
+        let server_state = Arc::new(Mutex::new(MockServerState::default()));
+        let (oauth1, drive1, handle1) = spawn_mock_google_server(Arc::clone(&server_state)).await;
+        let (_store1, _ts1, home1, mgr1) =
+            setup_connected_manager(&dir1, oauth1, drive1, future_unix_ms());
+
+        let docs1 = home1.join("Documents");
+        fs::create_dir_all(&docs1).unwrap();
+        let revert_file = docs1.join("revert.md");
+        fs::write(&revert_file, "v1 clean").unwrap();
+        mgr1.enqueue_local_file(&revert_file).await;
+        mgr1.sync_now(None, vec![]).await.unwrap();
+
+        server_state.lock().unwrap().drive_status_override = Some(503);
+        fs::write(&revert_file, "v2 failing").unwrap();
+        mgr1.enqueue_local_file(&revert_file).await;
+        let _ = mgr1.run_background_sweep().await;
+        assert_eq!(mgr1.get_status().unwrap().state, DriveSyncState::Error);
+
+        // Revert file content to previously synced v1; next sweep has uploaded_count == 0
+        // and pending_count == 0, which must clear the stale Error state.
+        fs::write(&revert_file, "v1 clean").unwrap();
+        mgr1.enqueue_local_file(&revert_file).await;
+        mgr1.run_background_sweep().await.unwrap();
+        let reverted_status = mgr1.get_status().unwrap();
+        assert_eq!(reverted_status.pending_count, 0);
+        assert_eq!(reverted_status.state, DriveSyncState::Idle);
+        assert!(reverted_status.last_error.is_none());
+
+        // Non-UTF-8 invalid local file still surfaces Error even with pending_count == 0.
+        let bad_utf8 = docs1.join("bad_utf8.md");
+        fs::write(&bad_utf8, [0xff_u8, 0xfe, 0x00]).unwrap();
+        mgr1.enqueue_local_file(&bad_utf8).await;
+        mgr1.run_background_sweep().await.unwrap();
+        let invalid_status = mgr1.get_status().unwrap();
+        assert_eq!(invalid_status.pending_count, 0);
+        assert_eq!(invalid_status.state, DriveSyncState::Error);
+        assert!(invalid_status.last_error.is_some());
+
+        handle1.abort();
+
+        // (b) Deleting a failing file while Offline clears Offline -> Idle on next sweep.
+        let dir2 = tempdir().unwrap();
+        let closed_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let closed_port = closed_listener.local_addr().unwrap().port();
+        drop(closed_listener);
+        let dead_base = format!("http://127.0.0.1:{closed_port}");
+        let dead_oauth = OAuthEndpoints {
+            auth_url: format!("{dead_base}/auth"),
+            token_url: format!("{dead_base}/token"),
+            revoke_url: format!("{dead_base}/revoke"),
+            userinfo_url: format!("{dead_base}/userinfo"),
+        };
+        let dead_drive = DriveApiEndpoints {
+            api_base_url: format!("{dead_base}/drive/v3"),
+            upload_base_url: format!("{dead_base}/upload/drive/v3"),
+        };
+        let (_store2, _ts2, home2, mgr2) =
+            setup_connected_manager(&dir2, dead_oauth, dead_drive, future_unix_ms());
+
+        let docs2 = home2.join("Documents");
+        fs::create_dir_all(&docs2).unwrap();
+        let deleted_file = docs2.join("deleted_offline.md");
+        fs::write(&deleted_file, "offline draft").unwrap();
+        mgr2.enqueue_local_file(&deleted_file).await;
+        let _ = mgr2.run_background_sweep().await;
+        assert_eq!(mgr2.get_status().unwrap().state, DriveSyncState::Offline);
+
+        fs::remove_file(&deleted_file).unwrap();
+        mgr2.enqueue_local_file(&deleted_file).await;
+        mgr2.run_background_sweep().await.unwrap();
+        let deleted_status = mgr2.get_status().unwrap();
+        assert_eq!(deleted_status.pending_count, 0);
+        assert_eq!(deleted_status.state, DriveSyncState::Idle);
+        assert!(deleted_status.last_error.is_none());
     }
 }

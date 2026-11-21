@@ -493,9 +493,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         });
       }
     } finally {
-      cloudConnectPendingRef.current = false;
-      if (isMountedRef.current) {
-        setCloudConnectPending(false);
+      if (sessionId === openSessionRef.current) {
+        cloudConnectPendingRef.current = false;
+        if (isMountedRef.current) {
+          setCloudConnectPending(false);
+        }
       }
     }
   };
@@ -1387,7 +1389,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         value={clientSecretDraft}
                         onChange={e => setClientSecretDraft(e.target.value)}
                         placeholder={
-                          authConfig.hasCustomClientSecret && !clientSecretDraft
+                          authConfig.hasCustomClientSecret &&
+                          !clientSecretDraft &&
+                          clientIdDraft.trim() === authConfig.customClientId
                             ? t('settings.cloudClientSecretPlaceholderSaved')
                             : ''
                         }
