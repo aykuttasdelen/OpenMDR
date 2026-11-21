@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod history_store;
 pub mod menu;
 pub mod models;
 
