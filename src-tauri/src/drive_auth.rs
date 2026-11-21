@@ -20,6 +20,8 @@ pub const DRIVE_OAUTH_SCOPES: &str = "https://www.googleapis.com/auth/drive.file
 const CUSTOM_CLIENT_ID_KEY: &str = "drive_custom_client_id";
 const OAUTH_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(180);
 const LOOPBACK_READ_TIMEOUT: Duration = Duration::from_secs(5);
+const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
+const OAUTH_REVOKE_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_LOOPBACK_REQUEST_BYTES: usize = 16 * 1024;
 const TOKEN_REFRESH_LEEWAY_MS: i64 = 60_000;
 
@@ -699,6 +701,7 @@ impl DriveAuthManager {
         let resp = self
             .http
             .post(&self.endpoints.token_url)
+            .timeout(OAUTH_HTTP_TIMEOUT)
             .form(&form)
             .send()
             .await
@@ -726,6 +729,10 @@ impl DriveAuthManager {
     pub async fn revoke_and_clear_tokens(&self) -> Result<(), String> {
         self.cancel_auth();
 
+        // Serialize with in-flight token refreshes so a concurrent refresh cannot
+        // persist renewed tokens into Keychain after sign-out clears them.
+        let _refresh_guard = self.refresh_lock.lock().await;
+
         if let Ok(Some(tokens)) = self.token_store.load_tokens() {
             let token = if !tokens.refresh_token.trim().is_empty() {
                 tokens.refresh_token
@@ -737,6 +744,7 @@ impl DriveAuthManager {
                 let _ = self
                     .http
                     .post(&self.endpoints.revoke_url)
+                    .timeout(OAUTH_REVOKE_TIMEOUT)
                     .form(&[("token", token.as_str())])
                     .send()
                     .await;
@@ -769,6 +777,7 @@ impl DriveAuthManager {
         let resp = self
             .http
             .post(&self.endpoints.token_url)
+            .timeout(OAUTH_HTTP_TIMEOUT)
             .form(&form)
             .send()
             .await
@@ -782,6 +791,7 @@ impl DriveAuthManager {
         let userinfo_resp = self
             .http
             .get(&self.endpoints.userinfo_url)
+            .timeout(OAUTH_HTTP_TIMEOUT)
             .bearer_auth(&token_resp.access_token)
             .send()
             .await
@@ -1041,9 +1051,9 @@ async fn write_html_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
     use tempfile::tempdir;
-    use tokio::sync::oneshot;
+    use tokio::sync::{oneshot, Notify};
 
     fn make_test_manager(
         endpoints: OAuthEndpoints,
@@ -1073,6 +1083,8 @@ mod tests {
         captured_token_params: Arc<StdMutex<Option<HashMap<String, String>>>>,
         captured_revoke_body: Arc<StdMutex<Option<String>>>,
         token_delay_ms: u64,
+        token_started: Option<Arc<Notify>>,
+        token_gate: Option<Arc<Notify>>,
         token_status: u16,
         token_body: String,
         userinfo_email: String,
@@ -1086,6 +1098,8 @@ mod tests {
                 captured_token_params: Arc::new(StdMutex::new(None)),
                 captured_revoke_body: Arc::new(StdMutex::new(None)),
                 token_delay_ms: 0,
+                token_started: None,
+                token_gate: None,
                 token_status: 200,
                 token_body: r#"{"access_token":"access-123","refresh_token":"refresh-456","expires_in":3600,"token_type":"Bearer"}"#.to_string(),
                 userinfo_email: "alice@example.com".to_string(),
@@ -1156,21 +1170,29 @@ mod tests {
 
                     let (status, resp_body) = match (method.as_str(), path) {
                         ("POST", "/token") => {
-                            let snapshot = {
+                            let (delay_ms, started, gate, status, resp_body) = {
                                 let guard = state.lock().unwrap();
                                 guard.token_hits.fetch_add(1, Ordering::SeqCst);
                                 *guard.captured_token_params.lock().unwrap() =
                                     Some(parse_query_params(&body));
                                 (
                                     guard.token_delay_ms,
+                                    guard.token_started.clone(),
+                                    guard.token_gate.clone(),
                                     guard.token_status,
                                     guard.token_body.clone(),
                                 )
                             };
-                            if snapshot.0 > 0 {
-                                tokio::time::sleep(Duration::from_millis(snapshot.0)).await;
+                            if let Some(started_notify) = started {
+                                started_notify.notify_one();
                             }
-                            (snapshot.1, snapshot.2)
+                            if let Some(gate_notify) = gate {
+                                gate_notify.notified().await;
+                            }
+                            if delay_ms > 0 {
+                                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                            }
+                            (status, resp_body)
                         }
                         ("GET", "/userinfo") => {
                             let email = state.lock().unwrap().userinfo_email.clone();
@@ -1627,6 +1649,108 @@ mod tests {
             store.get_drive_setting_str("drive_enabled").unwrap(),
             "false"
         );
+
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_revoke_waits_for_inflight_refresh_and_does_not_resurrect_tokens() {
+        let token_started = Arc::new(Notify::new());
+        let token_gate = Arc::new(Notify::new());
+        let mock_state = Arc::new(StdMutex::new(MockOAuthState {
+            token_started: Some(Arc::clone(&token_started)),
+            token_gate: Some(Arc::clone(&token_gate)),
+            token_status: 200,
+            token_body: r#"{"access_token":"fresh-access-race","refresh_token":"fresh-refresh-race","expires_in":3600,"token_type":"Bearer"}"#.to_string(),
+            ..MockOAuthState::default()
+        }));
+        let (base_url, server_handle) = spawn_mock_oauth_server(Arc::clone(&mock_state)).await;
+
+        let endpoints = OAuthEndpoints {
+            auth_url: format!("{base_url}/auth"),
+            token_url: format!("{base_url}/token"),
+            revoke_url: format!("{base_url}/revoke"),
+            userinfo_url: format!("{base_url}/userinfo"),
+        };
+
+        let (_dir, store, token_store, base_manager) = make_test_manager(endpoints);
+        let manager = Arc::new(
+            base_manager.with_built_in_credentials(
+                Some("test-client-id".into()),
+                Some("test-secret".into()),
+            ),
+        );
+
+        store
+            .set_drive_setting_str("drive_account_email", "alice@example.com")
+            .unwrap();
+        store
+            .set_drive_setting_str("drive_enabled", "true")
+            .unwrap();
+        token_store
+            .save_tokens(&StoredOAuthTokens {
+                refresh_token: "stale-refresh-race".to_string(),
+                access_token: "stale-access-race".to_string(),
+                expires_at_ms: 0,
+                email: "alice@example.com".to_string(),
+            })
+            .unwrap();
+
+        let refresh_manager = Arc::clone(&manager);
+        let refresh_task =
+            tokio::spawn(async move { refresh_manager.get_valid_access_token().await });
+
+        // Wait until get_valid_access_token() holds refresh_lock inside POST /token.
+        token_started.notified().await;
+
+        let revoke_finished = Arc::new(AtomicBool::new(false));
+        let revoke_finished_flag = Arc::clone(&revoke_finished);
+        let revoke_manager = Arc::clone(&manager);
+        let revoke_task = tokio::spawn(async move {
+            let res = revoke_manager.revoke_and_clear_tokens().await;
+            revoke_finished_flag.store(true, Ordering::SeqCst);
+            res
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !revoke_finished.load(Ordering::SeqCst),
+            "revoke_and_clear_tokens must wait for active refresh_lock before deleting tokens"
+        );
+
+        token_gate.notify_one();
+
+        let refresh_res = refresh_task.await.unwrap();
+        assert_eq!(refresh_res.unwrap(), "fresh-access-race");
+        revoke_task.await.unwrap().unwrap();
+
+        assert_eq!(
+            token_store.load_tokens().unwrap(),
+            None,
+            "in-flight refresh must not resurrect tokens after revoke_and_clear_tokens"
+        );
+        assert!(!manager.has_stored_tokens());
+        assert_eq!(
+            store.get_drive_setting_str("drive_account_email").unwrap(),
+            ""
+        );
+        assert_eq!(
+            store.get_drive_setting_str("drive_enabled").unwrap(),
+            "false"
+        );
+        assert_eq!(
+            mock_state.lock().unwrap().revoke_hits.load(Ordering::SeqCst),
+            1
+        );
+        let revoke_body = mock_state
+            .lock()
+            .unwrap()
+            .captured_revoke_body
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap();
+        assert!(revoke_body.contains("fresh-refresh-race"));
 
         server_handle.abort();
     }
