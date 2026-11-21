@@ -1,4 +1,4 @@
-use crate::drive_auth::{AuthError, DriveAuthConfig, DriveAuthManager};
+use crate::drive_auth::{AuthError, DriveAuthManager};
 use crate::drive_client::{DriveApiError, DriveClient, DriveRemoteFile, MAX_BACKUP_BYTES};
 use crate::history_store::{DriveFileRecord, DriveSettings, HistoryStore};
 use serde::{Deserialize, Serialize};
@@ -57,7 +57,7 @@ pub struct DriveStatus {
     pub last_sync_at: Option<i64>,
     pub last_error: Option<String>,
     pub auth_in_progress: bool,
-    pub auth_config: DriveAuthConfig,
+    pub oauth_configured: bool,
 }
 
 /// Result returned after flushing pending Drive uploads before application quit.
@@ -341,7 +341,7 @@ impl DriveManager {
         let connected = self.auth.has_stored_tokens();
         let settings = self.store.get_drive_settings()?;
         let summary = self.store.get_drive_summary()?;
-        let auth_config = self.auth.get_auth_config()?;
+        let oauth_configured = self.auth.is_configured();
         let auth_in_progress = self.auth.is_auth_in_progress();
 
         let account_email = if connected {
@@ -405,7 +405,7 @@ impl DriveManager {
             last_sync_at: summary.last_sync_at,
             last_error,
             auth_in_progress,
-            auth_config,
+            oauth_configured,
         })
     }
 
@@ -428,34 +428,6 @@ impl DriveManager {
         self.notify.notify_one();
         self.emit_status_changed();
         self.get_status()
-    }
-
-    /// Saves a BYO OAuth client ID (and optional secret), cleanly disconnecting if credentials changed.
-    pub async fn save_custom_oauth(
-        &self,
-        client_id: &str,
-        client_secret: Option<&str>,
-    ) -> Result<DriveAuthConfig, String> {
-        let _sync_guard = self.sync_lock.lock().await;
-        let (config, credentials_changed) = self.auth.save_custom_oauth(client_id, client_secret)?;
-        if credentials_changed {
-            self.auth.revoke_and_clear_tokens().await?;
-            self.reset_runtime_session_state();
-        }
-        self.emit_status_changed();
-        Ok(config)
-    }
-
-    /// Clears BYO OAuth settings, cleanly disconnecting if the active client credentials changed.
-    pub async fn clear_custom_oauth(&self) -> Result<DriveAuthConfig, String> {
-        let _sync_guard = self.sync_lock.lock().await;
-        let (config, credentials_changed) = self.auth.clear_custom_oauth()?;
-        if credentials_changed {
-            self.auth.revoke_and_clear_tokens().await?;
-            self.reset_runtime_session_state();
-        }
-        self.emit_status_changed();
-        Ok(config)
     }
 
     /// Completes OAuth PKCE sign-in, resolves `OpenMD/`, queues scoped files, and wakes background sync.
@@ -2634,12 +2606,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_queue_404_self_healing_and_custom_oauth_disconnect() {
+    async fn test_queue_404_self_healing() {
         let dir = tempdir().unwrap();
         let server_state = Arc::new(Mutex::new(MockServerState::default()));
         let (oauth_ep, drive_ep, server_handle) =
             spawn_mock_google_server(Arc::clone(&server_state)).await;
-        let (store, token_store, home_dir, manager) =
+        let (store, _token_store, home_dir, manager) =
             setup_connected_manager(&dir, oauth_ep, drive_ep, future_unix_ms());
 
         let docs_dir = home_dir.join("Documents").join("Notes");
@@ -2670,23 +2642,6 @@ mod tests {
             .unwrap();
         assert!(!rec2.dirty);
         assert_ne!(rec2.drive_file_id.as_deref(), Some(old_file_id.as_str()));
-
-        // Changing custom OAuth credentials disconnects cleanly and clears tokens + cache.
-        let cfg = manager
-            .save_custom_oauth("custom-client-123", Some("custom-sec-456"))
-            .await
-            .unwrap();
-        assert!(cfg.using_custom_client);
-        assert!(cfg.has_custom_client_secret);
-        assert!(token_store.load_tokens().unwrap().is_none());
-        assert_eq!(
-            manager.get_status().unwrap().state,
-            DriveSyncState::Disconnected
-        );
-        assert!(store
-            .get_drive_file(note_path.to_str().unwrap())
-            .unwrap()
-            .is_none());
 
         server_handle.abort();
     }

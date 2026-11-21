@@ -14,7 +14,6 @@ import {
   HistoryStats,
   RecoverFileResult,
   DriveSettings,
-  DriveAuthConfig,
   DriveStatus,
   DriveRemoteFile,
   DriveRestoreResult,
@@ -402,20 +401,6 @@ export const tauriAPI = {
 
   driveUpdateSettings: async (settings: DriveSettings): Promise<DriveStatus> => {
     return invoke<DriveStatus>('drive_update_settings', { settings });
-  },
-
-  driveSaveCustomOAuth: async (
-    clientId: string,
-    clientSecret?: string | null
-  ): Promise<DriveAuthConfig> => {
-    return invoke<DriveAuthConfig>('drive_save_custom_oauth', {
-      clientId,
-      clientSecret: clientSecret ?? null,
-    });
-  },
-
-  driveClearCustomOAuth: async (): Promise<DriveAuthConfig> => {
-    return invoke<DriveAuthConfig>('drive_clear_custom_oauth');
   },
 
   driveConnect: async (

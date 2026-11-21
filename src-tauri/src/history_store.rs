@@ -257,7 +257,6 @@ impl HistoryStore {
                     ('drive_idle_delay_seconds', ?2),
                     ('drive_account_email', ''),
                     ('drive_root_folder_id', ''),
-                    ('drive_custom_client_id', ''),
                     ('drive_last_sync_at', '0')
                 ",
                 params![

@@ -526,24 +526,6 @@ export const App: React.FC = () => {
     };
   }, [settingsModalOpen, isDriveAvailable]);
 
-  const refreshDriveStatusAfterAuthConfig = useCallback(async (authConfig: DriveStatus['authConfig']) => {
-    const api = window.electronAPI;
-    if (api?.driveGetStatus) {
-      try {
-        const nextStatus = await api.driveGetStatus();
-        if (isMountedRef.current) {
-          setDriveStatus(nextStatus);
-        }
-        return;
-      } catch {
-        // Fallback to patching authConfig below if driveGetStatus fails
-      }
-    }
-    if (isMountedRef.current) {
-      setDriveStatus(prev => (prev ? { ...prev, authConfig } : prev));
-    }
-  }, []);
-
   const handleDriveConnect = useCallback(async () => {
     const api = window.electronAPI;
     if (!isDriveAvailable || !api?.driveConnect) return;
@@ -591,20 +573,6 @@ export const App: React.FC = () => {
       setDriveStatus(nextStatus);
     }
   }, [isDriveAvailable]);
-
-  const handleDriveSaveCustomOAuth = useCallback(async (clientId: string, clientSecret: string | null) => {
-    const api = window.electronAPI;
-    if (!isDriveAvailable || !api?.driveSaveCustomOAuth) return;
-    const authConfig = await api.driveSaveCustomOAuth(clientId, clientSecret);
-    await refreshDriveStatusAfterAuthConfig(authConfig);
-  }, [isDriveAvailable, refreshDriveStatusAfterAuthConfig]);
-
-  const handleDriveClearCustomOAuth = useCallback(async () => {
-    const api = window.electronAPI;
-    if (!isDriveAvailable || !api?.driveClearCustomOAuth) return;
-    const authConfig = await api.driveClearCustomOAuth();
-    await refreshDriveStatusAfterAuthConfig(authConfig);
-  }, [isDriveAvailable, refreshDriveStatusAfterAuthConfig]);
 
   const handleOpenDriveRestoreFromSettings = useCallback(() => {
     setSettingsModalOpen(false);
@@ -2332,8 +2300,6 @@ export const App: React.FC = () => {
         onDriveDisconnect={isDriveAvailable ? handleDriveDisconnect : undefined}
         onDriveSyncNow={isDriveAvailable ? handleDriveSyncNow : undefined}
         onDriveUpdateSettings={isDriveAvailable ? handleDriveUpdateSettings : undefined}
-        onDriveSaveCustomOAuth={isDriveAvailable ? handleDriveSaveCustomOAuth : undefined}
-        onDriveClearCustomOAuth={isDriveAvailable ? handleDriveClearCustomOAuth : undefined}
         onOpenDriveRestore={isDriveAvailable ? handleOpenDriveRestoreFromSettings : undefined}
       />
 

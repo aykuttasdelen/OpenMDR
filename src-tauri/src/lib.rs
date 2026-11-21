@@ -264,8 +264,6 @@ pub fn run() {
             history_ops::history_get_stats,
             drive_ops::drive_get_status,
             drive_ops::drive_update_settings,
-            drive_ops::drive_save_custom_oauth,
-            drive_ops::drive_clear_custom_oauth,
             drive_ops::drive_connect,
             drive_ops::drive_cancel_auth,
             drive_ops::drive_disconnect,

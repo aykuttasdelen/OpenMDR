@@ -234,15 +234,7 @@ export const translations: Record<Language, Translations> = {
     'settings.cloudStats': '{synced} yedeklendi, {pending} bekliyor • Son eşitleme: {lastSync}',
     'settings.cloudLastSyncNever': 'Henüz yapılmadı',
     'settings.cloudScopeNote': 'Güvenlik nedeniyle OpenMD yalnızca kendi oluşturduğu OpenMD klasörüne erişebilir (drive.file kapsamı); diğer Drive dosyalarınıza erişmez.',
-    'settings.cloudNotConfiguredBanner': 'Yerleşik Google OAuth istemcisi yapılandırılmamış. Bağlanmak için kendi Google Cloud Masaüstü OAuth Client ID bilginizi girin.',
-    'settings.cloudByoTitle': 'Özel OAuth İstemcisi (BYO Client ID)',
-    'settings.cloudByoDesc': 'İsteğe bağlı olarak kendi Google Cloud OAuth 2.0 Masaüstü Uygulaması kimlik bilgilerinizi kullanabilirsiniz.',
-    'settings.cloudClientId': 'OAuth Client ID',
-    'settings.cloudClientSecret': 'OAuth Client Secret (İsteğe Bağlı)',
-    'settings.cloudClientSecretPlaceholderSaved': 'Kayıtlı secret korunuyor — değiştirmek için yenisini girin',
-    'settings.cloudSaveOAuth': 'OAuth Bilgilerini Kaydet',
-    'settings.cloudClearOAuth': 'Özel Bilgileri Temizle',
-    'settings.cloudSavedOAuth': 'Özel OAuth istemci bilgileri kaydedildi.',
+    'settings.cloudNotConfiguredBanner': 'Google Drive OAuth istemcisi bu derlemede yapılandırılmamış.',
 
     // OCR Modal
     'ocr.title': "PDF'ten Metin Aktar (Apple Vision OCR)",
@@ -358,7 +350,7 @@ export const translations: Record<Language, Translations> = {
     'driveError.authTimeout': 'Google Drive oturum açma süresi doldu. Lütfen tekrar deneyin.',
     'driveError.authDenied': 'Google Drive erişim izni reddedildi.',
     'driveError.authStateMismatch': 'Güvenlik doğrulaması (OAuth state) eşleşmedi. Lütfen tekrar deneyin.',
-    'driveError.oauthNotConfigured': 'Google OAuth istemcisi yapılandırılmamış. Lütfen Ayarlar > Bulut Yedekleme bölümünden bir Client ID girin.'
+    'driveError.oauthNotConfigured': 'Google OAuth istemcisi yapılandırılmamış.'
   },
   en: {
     // App
@@ -589,15 +581,7 @@ export const translations: Record<Language, Translations> = {
     'settings.cloudStats': '{synced} backed up, {pending} pending • Last sync: {lastSync}',
     'settings.cloudLastSyncNever': 'Never',
     'settings.cloudScopeNote': 'For privacy, OpenMD uses the restricted drive.file scope and can only access its own OpenMD backup folder.',
-    'settings.cloudNotConfiguredBanner': 'No built-in Google OAuth client is configured. Enter your own Google Cloud Desktop OAuth Client ID below to connect.',
-    'settings.cloudByoTitle': 'Custom OAuth Client (BYO Client ID)',
-    'settings.cloudByoDesc': 'Optionally use your own Google Cloud OAuth 2.0 Desktop App credentials.',
-    'settings.cloudClientId': 'OAuth Client ID',
-    'settings.cloudClientSecret': 'OAuth Client Secret (Optional)',
-    'settings.cloudClientSecretPlaceholderSaved': 'Saved secret retained — enter a new value to replace',
-    'settings.cloudSaveOAuth': 'Save OAuth Credentials',
-    'settings.cloudClearOAuth': 'Clear Custom Credentials',
-    'settings.cloudSavedOAuth': 'Custom OAuth client credentials saved.',
+    'settings.cloudNotConfiguredBanner': 'Google Drive OAuth client is not configured in this build.',
 
     // OCR Modal
     'ocr.title': 'Import PDF with OCR (Apple Vision)',
@@ -713,7 +697,7 @@ export const translations: Record<Language, Translations> = {
     'driveError.authTimeout': 'Google Drive sign-in timed out. Please try again.',
     'driveError.authDenied': 'Google Drive access permission was denied.',
     'driveError.authStateMismatch': 'Security verification (OAuth state) mismatch. Please try again.',
-    'driveError.oauthNotConfigured': 'Google OAuth client is not configured. Please enter a Client ID in Settings > Cloud Backup.'
+    'driveError.oauthNotConfigured': 'Google OAuth client is not configured.'
   }
 };
 

@@ -14,10 +14,8 @@ use tokio::sync::{watch, Mutex as AsyncMutex};
 
 pub const KEYCHAIN_SERVICE: &str = "com.openmd.editor";
 pub const KEYCHAIN_OAUTH_ACCOUNT: &str = "google-drive-oauth";
-pub const KEYCHAIN_CUSTOM_SECRET_ACCOUNT: &str = "google-drive-custom-client-secret";
 pub const DRIVE_OAUTH_SCOPES: &str = "https://www.googleapis.com/auth/drive.file openid email";
 
-const CUSTOM_CLIENT_ID_KEY: &str = "drive_custom_client_id";
 const OAUTH_LOOPBACK_TIMEOUT: Duration = Duration::from_secs(180);
 const LOOPBACK_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const OAUTH_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -37,9 +35,6 @@ pub trait TokenStore: Send + Sync {
     fn load_tokens(&self) -> Result<Option<StoredOAuthTokens>, String>;
     fn save_tokens(&self, tokens: &StoredOAuthTokens) -> Result<(), String>;
     fn delete_tokens(&self) -> Result<(), String>;
-    fn load_custom_secret(&self) -> Result<Option<String>, String>;
-    fn save_custom_secret(&self, secret: &str) -> Result<(), String>;
-    fn delete_custom_secret(&self) -> Result<(), String>;
 }
 
 /// OS Keychain-backed [`TokenStore`] using service `"com.openmd.editor"`.
@@ -91,27 +86,12 @@ impl TokenStore for KeychainTokenStore {
     fn delete_tokens(&self) -> Result<(), String> {
         Self::delete_if_exists(KEYCHAIN_OAUTH_ACCOUNT)
     }
-
-    fn load_custom_secret(&self) -> Result<Option<String>, String> {
-        Self::read_optional_password(KEYCHAIN_CUSTOM_SECRET_ACCOUNT)
-    }
-
-    fn save_custom_secret(&self, secret: &str) -> Result<(), String> {
-        Self::entry(KEYCHAIN_CUSTOM_SECRET_ACCOUNT)?
-            .set_password(secret)
-            .map_err(|e| e.to_string())
-    }
-
-    fn delete_custom_secret(&self) -> Result<(), String> {
-        Self::delete_if_exists(KEYCHAIN_CUSTOM_SECRET_ACCOUNT)
-    }
 }
 
 /// Thread-safe in-memory [`TokenStore`] test double.
 #[derive(Debug, Default)]
 pub struct MemoryTokenStore {
     tokens: StdMutex<Option<StoredOAuthTokens>>,
-    custom_secret: StdMutex<Option<String>>,
 }
 
 impl MemoryTokenStore {
@@ -132,20 +112,6 @@ impl TokenStore for MemoryTokenStore {
 
     fn delete_tokens(&self) -> Result<(), String> {
         *self.tokens.lock().map_err(|e| e.to_string())? = None;
-        Ok(())
-    }
-
-    fn load_custom_secret(&self) -> Result<Option<String>, String> {
-        Ok(self.custom_secret.lock().map_err(|e| e.to_string())?.clone())
-    }
-
-    fn save_custom_secret(&self, secret: &str) -> Result<(), String> {
-        *self.custom_secret.lock().map_err(|e| e.to_string())? = Some(secret.to_string());
-        Ok(())
-    }
-
-    fn delete_custom_secret(&self) -> Result<(), String> {
-        *self.custom_secret.lock().map_err(|e| e.to_string())? = None;
         Ok(())
     }
 }
@@ -170,22 +136,11 @@ impl Default for OAuthEndpoints {
     }
 }
 
-/// Resolved OAuth client credentials selected from BYO settings or build-time config.
+/// Resolved built-in OAuth client credentials from compile-time configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OAuthClientCredentials {
     pub client_id: String,
     pub client_secret: Option<String>,
-    pub is_custom: bool,
-}
-
-/// Non-secret OAuth configuration exposed over Tauri IPC.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct DriveAuthConfig {
-    pub has_built_in_client: bool,
-    pub using_custom_client: bool,
-    pub custom_client_id: String,
-    pub has_custom_client_secret: bool,
 }
 
 /// OAuth token bundle persisted in the OS Keychain.
@@ -333,111 +288,21 @@ impl DriveAuthManager {
         self
     }
 
-    pub fn resolve_credentials(&self) -> Result<OAuthClientCredentials, AuthError> {
-        let custom_id = self
-            .store
-            .get_drive_setting_str(CUSTOM_CLIENT_ID_KEY)
-            .map_err(AuthError::Other)?;
-        let custom_id = custom_id.trim();
-        if !custom_id.is_empty() {
-            let custom_secret = self
-                .token_store
-                .load_custom_secret()
-                .map_err(AuthError::Other)?
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty());
-            return Ok(OAuthClientCredentials {
-                client_id: custom_id.to_string(),
-                client_secret: custom_secret,
-                is_custom: true,
-            });
-        }
+    pub fn is_configured(&self) -> bool {
+        self.built_in_client_id
+            .as_deref()
+            .is_some_and(|s| !s.is_empty())
+    }
 
+    pub fn resolve_credentials(&self) -> Result<OAuthClientCredentials, AuthError> {
         if let Some(built_in_id) = self.built_in_client_id.as_deref().filter(|s| !s.is_empty()) {
             return Ok(OAuthClientCredentials {
                 client_id: built_in_id.to_string(),
                 client_secret: self.built_in_client_secret.clone(),
-                is_custom: false,
             });
         }
 
         Err(AuthError::NotConfigured)
-    }
-
-    pub fn get_auth_config(&self) -> Result<DriveAuthConfig, String> {
-        let custom_client_id = self
-            .store
-            .get_drive_setting_str(CUSTOM_CLIENT_ID_KEY)?
-            .trim()
-            .to_string();
-        let using_custom_client = !custom_client_id.is_empty();
-        let has_custom_client_secret = self
-            .token_store
-            .load_custom_secret()?
-            .is_some_and(|s| !s.trim().is_empty());
-        Ok(DriveAuthConfig {
-            has_built_in_client: self
-                .built_in_client_id
-                .as_deref()
-                .is_some_and(|s| !s.is_empty()),
-            using_custom_client,
-            custom_client_id,
-            has_custom_client_secret,
-        })
-    }
-
-    pub fn save_custom_oauth(
-        &self,
-        client_id: &str,
-        client_secret: Option<&str>,
-    ) -> Result<(DriveAuthConfig, bool), String> {
-        let trimmed_id = client_id.trim();
-        if trimmed_id.is_empty() {
-            return Err("Custom OAuth Client ID cannot be empty".to_string());
-        }
-
-        let prev_creds = self.resolve_credentials().ok();
-        let prev_custom_id = self
-            .store
-            .get_drive_setting_str(CUSTOM_CLIENT_ID_KEY)?
-            .trim()
-            .to_string();
-
-        self.store
-            .set_drive_setting_str(CUSTOM_CLIENT_ID_KEY, trimmed_id)?;
-
-        match client_secret {
-            Some(secret) => {
-                let trimmed_secret = secret.trim();
-                if trimmed_secret.is_empty() {
-                    self.token_store.delete_custom_secret()?;
-                } else {
-                    self.token_store.save_custom_secret(trimmed_secret)?;
-                }
-            }
-            None => {
-                // Clear any secret belonging to a different prior custom client ID, while
-                // keeping an already-saved secret when editing the same client ID without re-entry.
-                if trimmed_id != prev_custom_id {
-                    self.token_store.delete_custom_secret()?;
-                }
-            }
-        }
-
-        let new_creds = self.resolve_credentials().ok();
-        let credentials_changed = prev_creds != new_creds;
-        let config = self.get_auth_config()?;
-        Ok((config, credentials_changed))
-    }
-
-    pub fn clear_custom_oauth(&self) -> Result<(DriveAuthConfig, bool), String> {
-        let prev_creds = self.resolve_credentials().ok();
-        self.store.set_drive_setting_str(CUSTOM_CLIENT_ID_KEY, "")?;
-        self.token_store.delete_custom_secret()?;
-        let new_creds = self.resolve_credentials().ok();
-        let credentials_changed = prev_creds != new_creds;
-        let config = self.get_auth_config()?;
-        Ok((config, credentials_changed))
     }
 
     pub fn has_stored_tokens(&self) -> bool {
@@ -1255,74 +1120,44 @@ mod tests {
     }
 
     #[test]
-    fn test_oauth_credential_resolution_byo_overrides_builtin() {
+    fn test_oauth_credential_resolution_builtin_only() {
         let (_dir, store, token_store, unconfigured) = make_test_manager(OAuthEndpoints::default());
         assert_eq!(
             unconfigured.resolve_credentials(),
             Err(AuthError::NotConfigured)
         );
-        let empty_cfg = unconfigured.get_auth_config().unwrap();
-        assert!(!empty_cfg.has_built_in_client);
-        assert!(!empty_cfg.using_custom_client);
-        assert_eq!(empty_cfg.custom_client_id, "");
-        assert!(!empty_cfg.has_custom_client_secret);
+        assert!(!unconfigured.is_configured());
 
         let manager = DriveAuthManager::new(
             Arc::clone(&store),
-            token_store.clone(),
+            token_store,
             reqwest::Client::new(),
             OAuthEndpoints::default(),
         )
         .with_built_in_credentials(Some("builtin-id".into()), Some("builtin-sec".into()));
 
+        assert!(manager.is_configured());
         assert_eq!(
             manager.resolve_credentials().unwrap(),
             OAuthClientCredentials {
                 client_id: "builtin-id".to_string(),
                 client_secret: Some("builtin-sec".to_string()),
-                is_custom: false,
             }
         );
 
-        let (byo_cfg, changed) = manager
-            .save_custom_oauth("byo-id", Some("byo-sec"))
-            .unwrap();
-        assert!(changed);
-        assert!(byo_cfg.has_built_in_client);
-        assert!(byo_cfg.using_custom_client);
-        assert_eq!(byo_cfg.custom_client_id, "byo-id");
-        assert!(byo_cfg.has_custom_client_secret);
-
-        let cfg_json = serde_json::to_string(&byo_cfg).unwrap();
-        assert!(cfg_json.contains("hasCustomClientSecret"));
-        assert!(!cfg_json.contains("byo-sec"));
-        assert!(!cfg_json.contains("builtin-sec"));
+        let manager_no_secret = DriveAuthManager::new(
+            store,
+            Arc::new(MemoryTokenStore::new()),
+            reqwest::Client::new(),
+            OAuthEndpoints::default(),
+        )
+        .with_built_in_credentials(Some("builtin-id".into()), Some("   ".into()));
 
         assert_eq!(
-            manager.resolve_credentials().unwrap(),
-            OAuthClientCredentials {
-                client_id: "byo-id".to_string(),
-                client_secret: Some("byo-sec".to_string()),
-                is_custom: true,
-            }
-        );
-
-        let (same_cfg, unchanged) = manager.save_custom_oauth("byo-id", None).unwrap();
-        assert!(!unchanged);
-        assert!(same_cfg.has_custom_client_secret);
-
-        let (cleared_cfg, cleared_changed) = manager.clear_custom_oauth().unwrap();
-        assert!(cleared_changed);
-        assert!(!cleared_cfg.using_custom_client);
-        assert_eq!(cleared_cfg.custom_client_id, "");
-        assert!(!cleared_cfg.has_custom_client_secret);
-        assert_eq!(token_store.load_custom_secret().unwrap(), None);
-        assert_eq!(
-            manager.resolve_credentials().unwrap(),
+            manager_no_secret.resolve_credentials().unwrap(),
             OAuthClientCredentials {
                 client_id: "builtin-id".to_string(),
-                client_secret: Some("builtin-sec".to_string()),
-                is_custom: false,
+                client_secret: None,
             }
         );
     }

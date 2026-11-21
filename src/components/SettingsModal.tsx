@@ -24,10 +24,7 @@ import {
   AlertTriangle,
   RefreshCw,
   Loader2,
-  KeyRound,
   ShieldCheck,
-  ChevronDown,
-  ChevronRight,
   FolderDown,
   Unplug,
   Plug
@@ -82,8 +79,6 @@ export interface SettingsModalProps {
   onDriveDisconnect?: () => Promise<void>;
   onDriveSyncNow?: () => Promise<void>;
   onDriveUpdateSettings?: (settings: DriveSettings) => Promise<void>;
-  onDriveSaveCustomOAuth?: (clientId: string, clientSecret: string | null) => Promise<void>;
-  onDriveClearCustomOAuth?: () => Promise<void>;
   onOpenDriveRestore?: () => void;
 }
 
@@ -108,12 +103,7 @@ const DEFAULT_DRIVE_STATUS: DriveStatus = {
   lastSyncAt: null,
   lastError: null,
   authInProgress: false,
-  authConfig: {
-    hasBuiltInClient: false,
-    usingCustomClient: false,
-    customClientId: '',
-    hasCustomClientSecret: false,
-  },
+  oauthConfigured: false,
 };
 
 const MAX_VERSIONS_PRESETS = [20, 50, 100, 200] as const;
@@ -206,8 +196,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onDriveDisconnect,
   onDriveSyncNow,
   onDriveUpdateSettings,
-  onDriveSaveCustomOAuth,
-  onDriveClearCustomOAuth,
   onOpenDriveRestore,
 }) => {
   const { language, setLanguage, t } = useTranslation();
@@ -219,16 +207,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       onDriveDisconnect ||
       onDriveSyncNow ||
       onDriveUpdateSettings ||
-      onDriveSaveCustomOAuth ||
-      onDriveClearCustomOAuth ||
       onOpenDriveRestore
   );
 
   const currentDriveStatus = driveStatus ?? DEFAULT_DRIVE_STATUS;
   const driveSettings = currentDriveStatus.settings;
-  const authConfig = currentDriveStatus.authConfig;
-  const isDriveNotConfigured =
-    !authConfig.hasBuiltInClient && !authConfig.usingCustomClient;
+  const isDriveNotConfigured = !currentDriveStatus.oauthConfigured;
 
   const [activeTab, setActiveTab] = useState<TabType>(() => {
     const requested = initialTab ?? 'general';
@@ -251,9 +235,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     kind: 'success' | 'error';
     message: string;
   } | null>(null);
-  const [byoExpanded, setByoExpanded] = useState(isDriveNotConfigured);
-  const [clientIdDraft, setClientIdDraft] = useState(authConfig.customClientId);
-  const [clientSecretDraft, setClientSecretDraft] = useState('');
 
   const isMountedRef = useRef(true);
   const historyBusyRef = useRef(false);
@@ -275,8 +256,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setHistoryFeedback(null);
       setCloudFeedback(null);
       setCloudConnectPending(false);
-      setClientSecretDraft('');
-      setByoExpanded(false);
     }
   }, [isOpen]);
 
@@ -285,18 +264,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     const requested = initialTab ?? 'general';
     setActiveTab(requested === 'cloud' && !hasDriveSupport ? 'general' : requested);
   }, [isOpen, initialTab, hasDriveSupport]);
-
-  useEffect(() => {
-    if (isOpen) {
-      setClientIdDraft(authConfig.customClientId);
-    }
-  }, [isOpen, authConfig.customClientId]);
-
-  useEffect(() => {
-    if (isOpen && isDriveNotConfigured) {
-      setByoExpanded(true);
-    }
-  }, [isOpen, isDriveNotConfigured]);
 
   useEffect(() => {
     setMaxVersionsDraft(String(currentHistorySettings.maxVersionsPerFile));
@@ -561,31 +528,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (clamped.syncIntervalMinutes !== driveSettings.syncIntervalMinutes) {
       void runCloudAction(() => onDriveUpdateSettings(clamped));
     }
-  };
-
-  const handleSaveCustomOAuth = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmedId = clientIdDraft.trim();
-    if (!onDriveSaveCustomOAuth || !trimmedId) return;
-    const secretToSave = clientSecretDraft.trim() ? clientSecretDraft.trim() : null;
-    void runCloudAction(
-      () => onDriveSaveCustomOAuth(trimmedId, secretToSave),
-      () => {
-        setClientSecretDraft('');
-        setCloudFeedback({
-          kind: 'success',
-          message: t('settings.cloudSavedOAuth'),
-        });
-      }
-    );
-  };
-
-  const handleClearCustomOAuth = () => {
-    if (!onDriveClearCustomOAuth) return;
-    void runCloudAction(onDriveClearCustomOAuth, () => {
-      setClientIdDraft('');
-      setClientSecretDraft('');
-    });
   };
 
   return (
@@ -1308,125 +1250,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     ))}
                   </select>
                 </div>
-              </div>
-
-              {/* Advanced: BYO OAuth Client Accordion */}
-              <div className="cloud-accordion">
-                <button
-                  type="button"
-                  className="cloud-accordion-trigger"
-                  aria-expanded={byoExpanded}
-                  onClick={() => setByoExpanded(prev => !prev)}
-                >
-                  <span className="cloud-accordion-trigger-left">
-                    <KeyRound size={15} color="var(--accent-primary)" />
-                    <span>{t('settings.cloudByoTitle')}</span>
-                  </span>
-                  {byoExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-                </button>
-
-                {byoExpanded && (
-                  <form className="cloud-accordion-body" onSubmit={handleSaveCustomOAuth}>
-                    <div className="settings-desc">{t('settings.cloudByoDesc')}</div>
-
-                    <ol className="cloud-steps">
-                      {language === 'tr' ? (
-                        <>
-                          <li>
-                            Google Cloud Console'da bir proje oluşturup{' '}
-                            <strong>Google Drive API</strong>'yi etkinleştirin.
-                          </li>
-                          <li>
-                            <strong>Credentials → Create Credentials → OAuth client ID</strong>{' '}
-                            menüsünden uygulama türünü <strong>Desktop app</strong> seçin.
-                          </li>
-                          <li>
-                            Oluşturulan <strong>Client ID</strong> (ve varsa{' '}
-                            <strong>Client Secret</strong>) değerini aşağıya yapıştırıp kaydedin.
-                          </li>
-                        </>
-                      ) : (
-                        <>
-                          <li>
-                            Create a project in Google Cloud Console and enable the{' '}
-                            <strong>Google Drive API</strong>.
-                          </li>
-                          <li>
-                            Under <strong>Credentials → Create Credentials → OAuth client ID</strong>,
-                            choose <strong>Desktop app</strong>.
-                          </li>
-                          <li>
-                            Paste your <strong>Client ID</strong> (and optional{' '}
-                            <strong>Client Secret</strong>) below and save.
-                          </li>
-                        </>
-                      )}
-                    </ol>
-
-                    <div className="cloud-field">
-                      <label className="cloud-field-label" htmlFor="drive-byo-client-id">
-                        {t('settings.cloudClientId')}
-                      </label>
-                      <input
-                        id="drive-byo-client-id"
-                        type="text"
-                        className="cloud-input"
-                        value={clientIdDraft}
-                        onChange={e => setClientIdDraft(e.target.value)}
-                        placeholder="1234567890-abc.apps.googleusercontent.com"
-                        disabled={!canMutateDrive}
-                      />
-                    </div>
-
-                    <div className="cloud-field">
-                      <label className="cloud-field-label" htmlFor="drive-byo-client-secret">
-                        {t('settings.cloudClientSecret')}
-                      </label>
-                      <input
-                        id="drive-byo-client-secret"
-                        type="password"
-                        className="cloud-input"
-                        value={clientSecretDraft}
-                        onChange={e => setClientSecretDraft(e.target.value)}
-                        placeholder={
-                          authConfig.hasCustomClientSecret &&
-                          !clientSecretDraft &&
-                          clientIdDraft.trim() === authConfig.customClientId
-                            ? t('settings.cloudClientSecretPlaceholderSaved')
-                            : ''
-                        }
-                        disabled={!canMutateDrive}
-                      />
-                    </div>
-
-                    <div className="cloud-actions-row">
-                      <div className="cloud-actions-group">
-                        <button
-                          type="submit"
-                          className="btn-primary"
-                          disabled={
-                            !onDriveSaveCustomOAuth || !clientIdDraft.trim() || !canMutateDrive
-                          }
-                        >
-                          <Check size={14} />
-                          <span>{t('settings.cloudSaveOAuth')}</span>
-                        </button>
-                        {(authConfig.usingCustomClient ||
-                          Boolean(authConfig.customClientId)) && (
-                          <button
-                            type="button"
-                            className="btn-secondary btn-danger-ghost"
-                            onClick={handleClearCustomOAuth}
-                            disabled={!onDriveClearCustomOAuth || !canMutateDrive}
-                          >
-                            <Trash2 size={14} />
-                            <span>{t('settings.cloudClearOAuth')}</span>
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </form>
-                )}
               </div>
             </div>
           )}

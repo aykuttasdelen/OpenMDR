@@ -1,6 +1,6 @@
 use crate::commands::fs_ops::{resolve_available_path, validate_single_component};
 use crate::commands::image_ops::{allow_asset_dir, register_asset_search_dir};
-use crate::drive_auth::{AuthError, DriveAuthConfig};
+use crate::drive_auth::AuthError;
 use crate::drive_client::{DriveRemoteFile, MAX_BACKUP_BYTES};
 use crate::drive_sync::{DriveFlushResult, DriveManager, DriveState, DriveStatus};
 use crate::history_store::DriveSettings;
@@ -222,28 +222,6 @@ pub async fn drive_update_settings(
 ) -> Result<DriveStatus, String> {
     let manager = drive.manager()?;
     manager.update_settings(settings).await
-}
-
-/// Saves custom (BYO) OAuth client credentials and clears any stale session if credentials changed.
-#[tauri::command]
-pub async fn drive_save_custom_oauth(
-    drive: State<'_, DriveState>,
-    client_id: String,
-    client_secret: Option<String>,
-) -> Result<DriveAuthConfig, String> {
-    let manager = drive.manager()?;
-    manager
-        .save_custom_oauth(&client_id, client_secret.as_deref())
-        .await
-}
-
-/// Clears custom (BYO) OAuth client credentials and reverts to the built-in client if configured.
-#[tauri::command]
-pub async fn drive_clear_custom_oauth(
-    drive: State<'_, DriveState>,
-) -> Result<DriveAuthConfig, String> {
-    let manager = drive.manager()?;
-    manager.clear_custom_oauth().await
 }
 
 /// Starts Google OAuth 2.0 PKCE loopback sign-in in the default browser and queues scoped workspace/open files.

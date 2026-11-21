@@ -133,13 +133,6 @@ export interface DriveSettings {
   idleDelaySeconds: number;
 }
 
-export interface DriveAuthConfig {
-  hasBuiltInClient: boolean;
-  usingCustomClient: boolean;
-  customClientId: string;
-  hasCustomClientSecret: boolean;
-}
-
 export interface DriveStatus {
   state: DriveSyncState;
   connected: boolean;
@@ -151,7 +144,7 @@ export interface DriveStatus {
   lastSyncAt: number | null;
   lastError: string | null;
   authInProgress: boolean;
-  authConfig: DriveAuthConfig;
+  oauthConfigured: boolean;
 }
 
 export interface DriveRemoteFile {
@@ -236,8 +229,6 @@ export interface ElectronAPI {
   historyGetStats: () => Promise<HistoryStats>;
   driveGetStatus?: () => Promise<DriveStatus>;
   driveUpdateSettings?: (settings: DriveSettings) => Promise<DriveStatus>;
-  driveSaveCustomOAuth?: (clientId: string, clientSecret?: string | null) => Promise<DriveAuthConfig>;
-  driveClearCustomOAuth?: () => Promise<DriveAuthConfig>;
   driveConnect?: (workspaceDir?: string | null, openFilePaths?: string[] | null) => Promise<DriveStatus>;
   driveCancelAuth?: () => Promise<boolean>;
   driveDisconnect?: () => Promise<DriveStatus>;
