@@ -110,6 +110,14 @@ struct DriveApiFileItem {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DriveFileStatusResponse {
+    id: String,
+    #[serde(default)]
+    trashed: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
 struct DriveErrorEnvelope {
     error: Option<DriveErrorDetail>,
 }
@@ -362,28 +370,21 @@ impl DriveClient {
     ) -> Result<Vec<DriveRemoteFile>, DriveApiError> {
         let hinted = root_folder_id_hint
             .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
+            .filter(|s| !s.is_empty());
 
-        let root_id = match hinted.clone() {
-            Some(hint) => hint,
-            None => match self.find_root_folder_id(access_token).await? {
-                Some(id) => id,
-                None => return Ok(Vec::new()),
+        let resolved_root_id = match hinted {
+            Some(hint) => match self.verify_active_folder_id(access_token, hint).await? {
+                Some(active_id) => Some(active_id),
+                None => self.find_root_folder_id(access_token).await?,
             },
+            None => self.find_root_folder_id(access_token).await?,
         };
 
-        match self.bfs_list_from_root(access_token, &root_id).await {
-            Ok(files) => Ok(files),
-            Err(DriveApiError::NotFound(_)) if hinted.is_some() => {
-                let Some(resolved_root_id) = self.find_root_folder_id(access_token).await? else {
-                    return Ok(Vec::new());
-                };
-                self.bfs_list_from_root(access_token, &resolved_root_id)
-                    .await
-            }
-            Err(err) => Err(err),
-        }
+        let Some(root_id) = resolved_root_id else {
+            return Ok(Vec::new());
+        };
+
+        self.bfs_list_from_root(access_token, &root_id).await
     }
 
     /// Downloads a Drive file's content as UTF-8 while enforcing [`MAX_BACKUP_BYTES`].
@@ -394,7 +395,7 @@ impl DriveClient {
     ) -> Result<String, DriveApiError> {
         let mut resp = self
             .http
-            .get(self.api_file_url(file_id))
+            .get(self.api_file_url(file_id)?)
             .timeout(DRIVE_TRANSFER_TIMEOUT)
             .bearer_auth(access_token)
             .query(&[("alt", "media")])
@@ -444,12 +445,8 @@ impl DriveClient {
         format!("{}/files", self.endpoints.api_base_url.trim_end_matches('/'))
     }
 
-    fn api_file_url(&self, file_id: &str) -> String {
-        format!(
-            "{}/files/{}",
-            self.endpoints.api_base_url.trim_end_matches('/'),
-            encode_path_segment(file_id)
-        )
+    fn api_file_url(&self, file_id: &str) -> Result<String, DriveApiError> {
+        build_file_url(&self.endpoints.api_base_url, file_id)
     }
 
     fn upload_files_url(&self) -> String {
@@ -459,12 +456,28 @@ impl DriveClient {
         )
     }
 
-    fn upload_file_url(&self, file_id: &str) -> String {
-        format!(
-            "{}/files/{}",
-            self.endpoints.upload_base_url.trim_end_matches('/'),
-            encode_path_segment(file_id)
-        )
+    fn upload_file_url(&self, file_id: &str) -> Result<String, DriveApiError> {
+        build_file_url(&self.endpoints.upload_base_url, file_id)
+    }
+
+    async fn verify_active_folder_id(
+        &self,
+        access_token: &str,
+        folder_id: &str,
+    ) -> Result<Option<String>, DriveApiError> {
+        let req = self
+            .http
+            .get(self.api_file_url(folder_id)?)
+            .timeout(DRIVE_API_TIMEOUT)
+            .bearer_auth(access_token)
+            .query(&[("fields", "id,trashed")]);
+
+        match send_and_parse_json::<DriveFileStatusResponse>(req).await {
+            Ok(meta) if meta.trashed == Some(true) || meta.id.trim().is_empty() => Ok(None),
+            Ok(meta) => Ok(Some(meta.id)),
+            Err(DriveApiError::NotFound(_)) => Ok(None),
+            Err(err) => Err(err),
+        }
     }
 
     async fn find_root_folder_id(&self, access_token: &str) -> Result<Option<String>, DriveApiError> {
@@ -578,7 +591,7 @@ impl DriveClient {
 
         let req = self
             .http
-            .patch(self.api_file_url(file_id))
+            .patch(self.api_file_url(file_id)?)
             .timeout(DRIVE_API_TIMEOUT)
             .bearer_auth(access_token)
             .query(&query_params)
@@ -603,7 +616,7 @@ impl DriveClient {
     ) -> Result<UploadedFileMeta, DriveApiError> {
         let req = self
             .http
-            .patch(self.upload_file_url(file_id))
+            .patch(self.upload_file_url(file_id)?)
             .timeout(DRIVE_TRANSFER_TIMEOUT)
             .bearer_auth(access_token)
             .header(reqwest::header::CONTENT_TYPE, MARKDOWN_MIME)
@@ -786,6 +799,21 @@ fn local_store_error(err: String) -> DriveApiError {
 
 fn encode_path_segment(seg: &str) -> String {
     utf8_percent_encode(seg, PATH_ENCODE_SET).to_string()
+}
+
+fn build_file_url(base_url: &str, file_id: &str) -> Result<String, DriveApiError> {
+    let trimmed = file_id.trim();
+    if trimmed.is_empty() {
+        return Err(DriveApiError::Api {
+            status: 400,
+            message: "Drive file ID cannot be empty".to_string(),
+        });
+    }
+    Ok(format!(
+        "{}/files/{}",
+        base_url.trim_end_matches('/'),
+        encode_path_segment(trimmed)
+    ))
 }
 
 fn uploaded_meta_from_item(item: DriveApiFileItem, fallback_parent_id: &str) -> UploadedFileMeta {
@@ -1042,7 +1070,6 @@ mod tests {
         next_id: usize,
         requests: Vec<RecordedRequest>,
         page_size_override: Option<usize>,
-        force_404_on_parent: Option<String>,
     }
 
     impl MockDriveState {
@@ -1363,27 +1390,6 @@ mod tests {
             ("GET", "/drive/v3/files") => {
                 let q = req.query.get("q").cloned().unwrap_or_default();
                 let parent = extract_in_parents(&q);
-                if let Some(ref p) = parent
-                    && guard.force_404_on_parent.as_deref() == Some(p.as_str())
-                {
-                    return (
-                        404,
-                        "application/json",
-                        br#"{"error":{"message":"Parent not found"}}"#.to_vec(),
-                        false,
-                    );
-                }
-                if let Some(ref p) = parent
-                    && p != "root"
-                    && !guard.items.get(p).is_some_and(|it| !it.trashed)
-                {
-                    return (
-                        404,
-                        "application/json",
-                        br#"{"error":{"message":"Folder not found"}}"#.to_vec(),
-                        false,
-                    );
-                }
 
                 let name_filter = extract_quoted_field(&q, "name = ");
                 let mime_eq = extract_quoted_field(&q, "mimeType = ");
@@ -1703,19 +1709,34 @@ mod tests {
                         false,
                     );
                 };
-                if item.trashed {
+                if req.query.get("alt").map(String::as_str) == Some("media") {
+                    if item.trashed {
+                        return (
+                            404,
+                            "application/json",
+                            br#"{"error":{"message":"File trashed"}}"#.to_vec(),
+                            false,
+                        );
+                    }
                     return (
-                        404,
-                        "application/json",
-                        br#"{"error":{"message":"File trashed"}}"#.to_vec(),
-                        false,
+                        200,
+                        "text/markdown; charset=utf-8",
+                        item.content.clone(),
+                        item.chunked_without_length,
                     );
                 }
+                let meta = serde_json::json!({
+                    "id": item.id,
+                    "name": item.name,
+                    "mimeType": item.mime_type,
+                    "trashed": item.trashed,
+                    "parents": item.parents,
+                });
                 (
                     200,
-                    "text/markdown; charset=utf-8",
-                    item.content.clone(),
-                    item.chunked_without_length,
+                    "application/json",
+                    serde_json::to_vec(&meta).unwrap(),
+                    false,
                 )
             }
             _ => (
@@ -2092,17 +2113,62 @@ mod tests {
             .any(|r| r.query.get("pageToken").map(String::as_str) == Some("p2"));
         assert!(used_page_token);
 
-        // Stale root hint returning 404 falls back to searching OpenMD root.
+        // Active root hint passes files.get verification and skips searching root.
+        let via_active_hint = client
+            .list_files_under_root("tok", Some("root-openmd"))
+            .await
+            .unwrap();
+        assert_eq!(via_active_hint, files);
+
+        // Stale root hint returning 404 on files.get falls back to searching OpenMD root.
         let via_stale_hint = client
             .list_files_under_root("tok", Some("missing-root-hint"))
             .await
             .unwrap();
         assert_eq!(via_stale_hint, files);
+        assert!(state.lock().unwrap().requests.iter().any(|r| {
+            r.method == "GET"
+                && r.path == "/drive/v3/files/missing-root-hint"
+                && r.query.get("fields").map(String::as_str) == Some("id,trashed")
+        }));
 
-        // When no OpenMD root exists, listing returns an empty list rather than creating a folder.
+        // Trashed root hint (even with non-trashed descendants) falls back to active OpenMD root.
+        {
+            let mut guard = state.lock().unwrap();
+            guard.add_folder("trashed-openmd", "OpenMD", "root", "2026-11-21T09:00:00Z");
+            guard.items.get_mut("trashed-openmd").unwrap().trashed = true;
+            guard.add_file(
+                "file-in-trashed",
+                "ghost.md",
+                "trashed-openmd",
+                MARKDOWN_MIME,
+                "2026-11-21T15:00:00.000Z",
+                b"ghost".to_vec(),
+            );
+        }
+        let via_trashed_hint = client
+            .list_files_under_root("tok", Some("trashed-openmd"))
+            .await
+            .unwrap();
+        assert_eq!(via_trashed_hint, files);
+
+        // When no active OpenMD root exists, stale/trashed hints return an empty list rather than failing.
+        state.lock().unwrap().items.remove("root-openmd");
+        state.lock().unwrap().items.remove("fld-docs");
+        let empty_from_trashed = client
+            .list_files_under_root("tok", Some("trashed-openmd"))
+            .await
+            .unwrap();
+        assert!(empty_from_trashed.is_empty());
+
         state.lock().unwrap().items.clear();
         let empty = client.list_files_under_root("tok", None).await.unwrap();
         assert!(empty.is_empty());
+        let empty_from_missing = client
+            .list_files_under_root("tok", Some("missing-root-hint"))
+            .await
+            .unwrap();
+        assert!(empty_from_missing.is_empty());
 
         server.abort();
     }
@@ -2176,6 +2242,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err_429, DriveApiError::RateLimited(_)));
+
+        let err_empty = client
+            .download_file_content("tok", "   ")
+            .await
+            .unwrap_err();
+        assert!(matches!(err_empty, DriveApiError::Api { status: 400, .. }));
 
         server.abort();
         let _ = server.await;
