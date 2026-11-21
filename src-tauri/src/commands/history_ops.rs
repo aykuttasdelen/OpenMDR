@@ -1,5 +1,6 @@
 use crate::commands::fs_ops::{resolve_available_path, validate_single_component};
 use crate::commands::image_ops::{allow_asset_dir, register_asset_search_dir};
+use crate::drive_sync::{DriveManager, DriveState};
 use crate::history_store::{
     DeletedFileSummary, DiffResult, HistorySettings, HistoryStats, HistoryStore, SnapshotSummary,
     MAX_SNAPSHOT_BYTES,
@@ -157,6 +158,7 @@ pub async fn restore_snapshot_inner(
     file_path: String,
     snapshot_id: i64,
     current_content: String,
+    drive: Option<Arc<DriveManager>>,
 ) -> Result<String, String> {
     let db_file_path = file_path.clone();
     let target_content = run_blocking_store(store, move |s| {
@@ -180,6 +182,10 @@ pub async fn restore_snapshot_inner(
         .await
         .map_err(|e| format!("Failed to write restored file: {e}"))?;
 
+    if let Some(drive) = drive {
+        drive.enqueue_local_file(target_path).await;
+    }
+
     Ok(target_content)
 }
 
@@ -189,6 +195,7 @@ pub async fn recover_file_inner(
     file_id: i64,
     snapshot_id: i64,
     target_dir: Option<String>,
+    drive: Option<Arc<DriveManager>>,
 ) -> Result<RecoverFileResult, String> {
     let (tracked, content) = run_blocking_store(Arc::clone(&store), move |s| {
         let tracked = s.get_tracked_file(file_id)?;
@@ -252,6 +259,10 @@ pub async fn recover_file_inner(
             s.update_tracked_file_path(file_id, &updated_path)
         })
         .await?;
+    }
+
+    if let Some(drive) = drive {
+        drive.enqueue_local_file(&dest_path).await;
     }
 
     Ok(RecoverFileResult {
@@ -326,13 +337,20 @@ pub async fn history_diff_snapshot(
 pub async fn history_restore_snapshot(
     app: AppHandle,
     state: State<'_, HistoryState>,
+    drive: State<'_, DriveState>,
     file_path: String,
     snapshot_id: i64,
     current_content: String,
 ) -> Result<String, String> {
     let store = state.store()?;
-    let restored =
-        restore_snapshot_inner(store, file_path.clone(), snapshot_id, current_content).await?;
+    let restored = restore_snapshot_inner(
+        store,
+        file_path.clone(),
+        snapshot_id,
+        current_content,
+        drive.0.clone(),
+    )
+    .await?;
     let path = Path::new(&file_path);
     register_asset_search_dir(path);
     allow_asset_dir(&app, path);
@@ -353,12 +371,14 @@ pub async fn history_list_deleted_files(
 pub async fn history_recover_file(
     app: AppHandle,
     state: State<'_, HistoryState>,
+    drive: State<'_, DriveState>,
     file_id: i64,
     snapshot_id: i64,
     target_dir: Option<String>,
 ) -> Result<RecoverFileResult, String> {
     let store = state.store()?;
-    let result = recover_file_inner(store, file_id, snapshot_id, target_dir).await?;
+    let result =
+        recover_file_inner(store, file_id, snapshot_id, target_dir, drive.0.clone()).await?;
     let path = Path::new(&result.file_path);
     register_asset_search_dir(path);
     allow_asset_dir(&app, path);
@@ -427,6 +447,7 @@ mod tests {
             doc_str.clone(),
             snap_v1_id,
             "v3 unsaved edits".to_string(),
+            None,
         )
         .await
         .unwrap();
@@ -452,6 +473,7 @@ mod tests {
             other_str.clone(),
             snap_v1_id,
             "should not be saved".to_string(),
+            None,
         )
         .await;
         assert!(mismatch_res.is_err());
@@ -485,7 +507,7 @@ mod tests {
         assert!(!lost_path.exists());
         assert_eq!(store.list_deleted_files().unwrap().len(), 1);
 
-        let result = recover_file_inner(Arc::clone(&store), file_id, snap_id, None)
+        let result = recover_file_inner(Arc::clone(&store), file_id, snap_id, None, None)
             .await
             .unwrap();
 
@@ -525,6 +547,7 @@ mod tests {
             file_id,
             snap_id,
             Some(other_dir.to_string_lossy().to_string()),
+            None,
         )
         .await
         .unwrap();
@@ -558,9 +581,15 @@ mod tests {
 
         fs::write(&item_path, "brand new item").unwrap();
 
-        let res_orig = recover_file_inner(Arc::clone(&store), item_file_id, item_snap_id, None)
-            .await
-            .unwrap();
+        let res_orig = recover_file_inner(
+            Arc::clone(&store),
+            item_file_id,
+            item_snap_id,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         let expected_orig_path = orig2_dir.join("item 2.md");
         assert_eq!(
@@ -621,6 +650,7 @@ mod tests {
             file_id,
             snap_id,
             Some(target_dir.to_string_lossy().to_string()),
+            None,
         )
         .await;
 

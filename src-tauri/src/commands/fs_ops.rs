@@ -1,6 +1,7 @@
 use crate::commands::history_ops::{
     capture_pre_write_baseline, record_write_with_baseline, HistoryState,
 };
+use crate::drive_sync::{DriveManager, DriveState};
 use crate::history_store::HistoryStore;
 use crate::models::FileItem;
 use std::fs;
@@ -146,9 +147,10 @@ pub async fn read_file(app: tauri::AppHandle, file_path: String) -> Result<Strin
         .map_err(|e| format!("Dosya okunamadı: {}", e))
 }
 
-/// Writes `content` to `path`, capturing a pre-write baseline and recording a history snapshot.
+/// Writes `content` to `path`, capturing a pre-write baseline, recording a history snapshot, and enqueuing for Drive backup.
 pub(crate) async fn write_path_with_history(
     store: Option<Arc<HistoryStore>>,
+    drive: Option<Arc<DriveManager>>,
     path: &Path,
     content: String,
     save_source: String,
@@ -168,15 +170,20 @@ pub(crate) async fn write_path_with_history(
     )
     .await;
 
+    if let Some(drive) = drive {
+        drive.enqueue_local_file(path).await;
+    }
+
     Ok(())
 }
 
-/// Ensures parent directories exist, writes `content` to disk, and records version history.
+/// Ensures parent directories exist, writes `content` to disk, records version history, and enqueues for Drive backup.
 pub(crate) async fn write_file_inner(
     store: Option<Arc<HistoryStore>>,
     file_path: String,
     content: String,
     save_source: Option<String>,
+    drive: Option<Arc<DriveManager>>,
 ) -> Result<bool, String> {
     let path = Path::new(&file_path);
     if let Some(parent) = path.parent()
@@ -189,7 +196,7 @@ pub(crate) async fn write_file_inner(
     }
 
     let source = save_source.unwrap_or_else(|| "manual".to_string());
-    write_path_with_history(store, path, content, source).await?;
+    write_path_with_history(store, drive, path, content, source).await?;
     Ok(true)
 }
 
@@ -197,6 +204,7 @@ pub(crate) async fn write_file_inner(
 pub async fn write_file(
     app: tauri::AppHandle,
     history: tauri::State<'_, HistoryState>,
+    drive: tauri::State<'_, DriveState>,
     file_path: String,
     content: String,
     save_source: Option<String>,
@@ -204,7 +212,14 @@ pub async fn write_file(
     let path = Path::new(&file_path);
     crate::commands::image_ops::register_asset_search_dir(path);
     crate::commands::image_ops::allow_asset_dir(&app, path);
-    write_file_inner(history.0.clone(), file_path, content, save_source).await
+    write_file_inner(
+        history.0.clone(),
+        file_path,
+        content,
+        save_source,
+        drive.0.clone(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -226,8 +241,11 @@ pub async fn scan_directory(
     Ok(items)
 }
 
-#[tauri::command]
-pub async fn create_file(dir_path: String, file_name: String) -> Result<String, String> {
+pub(crate) async fn create_file_inner(
+    dir_path: String,
+    file_name: String,
+    drive: Option<Arc<DriveManager>>,
+) -> Result<String, String> {
     validate_single_component(&file_name)?;
 
     let lower = file_name.to_lowercase();
@@ -269,7 +287,20 @@ pub async fn create_file(dir_path: String, file_name: String) -> Result<String, 
         .await
         .map_err(|e| format!("Dosya yazılamadı: {}", e))?;
 
+    if let Some(drive) = drive {
+        drive.enqueue_local_file(&target_path).await;
+    }
+
     Ok(target_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub async fn create_file(
+    drive: tauri::State<'_, DriveState>,
+    dir_path: String,
+    file_name: String,
+) -> Result<String, String> {
+    create_file_inner(dir_path, file_name, drive.0.clone()).await
 }
 
 #[tauri::command]
@@ -283,18 +314,22 @@ pub async fn create_directory(parent_path: String, dir_name: String) -> Result<S
     Ok(target_path.to_string_lossy().to_string())
 }
 
-/// Renames a path on disk and updates any tracked version history paths best-effort.
+/// Renames a path on disk and updates tracked version history and Drive backup paths best-effort.
 pub(crate) async fn rename_file_inner(
     store: Option<Arc<HistoryStore>>,
     old_path: String,
     new_path: String,
+    drive: Option<Arc<DriveManager>>,
 ) -> Result<bool, String> {
     tokio::fs::rename(&old_path, &new_path)
         .await
         .map_err(|e| format!("Yeniden adlandırılamadı: {}", e))?;
 
+    let history_old = old_path.clone();
+    let history_new = new_path.clone();
     if let Some(store) = store {
-        match tokio::task::spawn_blocking(move || store.handle_rename(&old_path, &new_path)).await
+        match tokio::task::spawn_blocking(move || store.handle_rename(&history_old, &history_new))
+            .await
         {
             Ok(Ok(())) => {}
             Ok(Err(err)) => {
@@ -306,16 +341,23 @@ pub(crate) async fn rename_file_inner(
         }
     }
 
+    if let Some(drive) = drive {
+        drive
+            .handle_rename(Path::new(&old_path), Path::new(&new_path))
+            .await;
+    }
+
     Ok(true)
 }
 
 #[tauri::command]
 pub async fn rename_file(
     history: tauri::State<'_, HistoryState>,
+    drive: tauri::State<'_, DriveState>,
     old_path: String,
     new_path: String,
 ) -> Result<bool, String> {
-    rename_file_inner(history.0.clone(), old_path, new_path).await
+    rename_file_inner(history.0.clone(), old_path, new_path, drive.0.clone()).await
 }
 
 #[tauri::command]

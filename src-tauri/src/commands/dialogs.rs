@@ -1,5 +1,6 @@
 use crate::commands::fs_ops::{scan_dir_recursive, write_path_with_history};
 use crate::commands::history_ops::HistoryState;
+use crate::drive_sync::DriveState;
 use crate::models::{OpenDirectoryResult, OpenFileResult};
 use std::path::Path;
 use tauri::State;
@@ -54,6 +55,7 @@ pub async fn open_pdf_dialog() -> Result<Option<String>, String> {
 #[tauri::command]
 pub async fn save_file_dialog(
     history: State<'_, HistoryState>,
+    drive: State<'_, DriveState>,
     default_name: Option<String>,
     default_dir: Option<String>,
     content: Option<String>,
@@ -76,8 +78,14 @@ pub async fn save_file_dialog(
             let path = file.path().to_path_buf();
             crate::commands::image_ops::register_asset_search_dir(&path);
             if let Some(text) = content {
-                write_path_with_history(history.0.clone(), &path, text, "manual".to_string())
-                    .await?;
+                write_path_with_history(
+                    history.0.clone(),
+                    drive.0.clone(),
+                    &path,
+                    text,
+                    "manual".to_string(),
+                )
+                .await?;
             }
             Ok(Some(path.to_string_lossy().to_string()))
         }

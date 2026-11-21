@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod drive_auth;
 pub mod drive_client;
+pub mod drive_sync;
 pub mod history_store;
 pub mod menu;
 pub mod models;
@@ -403,21 +404,21 @@ mod tests {
         let dir = tempdir().unwrap();
         let base = dir.path().to_str().unwrap().to_string();
 
-        assert!(fs_ops::create_file(base.clone(), "../escape.md".to_string()).await.is_err());
-        assert!(fs_ops::create_file(base.clone(), "sub/file.md".to_string()).await.is_err());
-        assert!(fs_ops::create_file(base.clone(), "..".to_string()).await.is_err());
-        assert!(fs_ops::create_file(base.clone(), String::new()).await.is_err());
+        assert!(fs_ops::create_file_inner(base.clone(), "../escape.md".to_string(), None).await.is_err());
+        assert!(fs_ops::create_file_inner(base.clone(), "sub/file.md".to_string(), None).await.is_err());
+        assert!(fs_ops::create_file_inner(base.clone(), "..".to_string(), None).await.is_err());
+        assert!(fs_ops::create_file_inner(base.clone(), String::new(), None).await.is_err());
 
         assert!(fs_ops::create_directory(base.clone(), "../dir".to_string()).await.is_err());
         assert!(fs_ops::get_available_path(base.clone(), "../x.md".to_string()).await.is_err());
 
-        let created_path = fs_ops::create_file(base.clone(), "CaseTest.MD".to_string())
+        let created_path = fs_ops::create_file_inner(base.clone(), "CaseTest.MD".to_string(), None)
             .await
             .unwrap();
         assert!(created_path.ends_with("CaseTest.MD"));
         let created_content = fs::read_to_string(&created_path).unwrap();
         assert!(created_content.contains("# CaseTest"));
-        assert!(fs_ops::create_file(base.clone(), "CaseTest.MD".to_string()).await.is_err());
+        assert!(fs_ops::create_file_inner(base.clone(), "CaseTest.MD".to_string(), None).await.is_err());
 
         let utf8_file = dir.path().join("Ö2.md");
         fs::write(&utf8_file, "test").unwrap();
@@ -587,6 +588,7 @@ mod tests {
             doc_str.clone(),
             "v1 manual".to_string(),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -602,6 +604,7 @@ mod tests {
             doc_str.clone(),
             "v2 autosaved".to_string(),
             Some("autosave".to_string()),
+            None,
         )
         .await
         .unwrap();
@@ -619,7 +622,7 @@ mod tests {
         let no_history_path = dir.path().join("no_history.md");
         let no_history_str = no_history_path.to_string_lossy().to_string();
         assert!(
-            fs_ops::write_file_inner(None, no_history_str, "disk only".to_string(), None)
+            fs_ops::write_file_inner(None, no_history_str, "disk only".to_string(), None, None)
                 .await
                 .unwrap()
         );
@@ -642,6 +645,7 @@ mod tests {
             old_str.clone(),
             "tracked content".to_string(),
             Some("manual".to_string()),
+            None,
         )
         .await
         .unwrap();
@@ -650,6 +654,7 @@ mod tests {
             Some(Arc::clone(&store)),
             old_str.clone(),
             new_str.clone(),
+            None,
         )
         .await
         .unwrap();
@@ -668,7 +673,7 @@ mod tests {
         let third_path = dir.path().join("third_name.md");
         let third_str = third_path.to_string_lossy().to_string();
         assert!(
-            fs_ops::rename_file_inner(None, new_str, third_str)
+            fs_ops::rename_file_inner(None, new_str, third_str, None)
                 .await
                 .unwrap()
         );
